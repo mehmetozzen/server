@@ -135,7 +135,7 @@ class MediaService extends KalturaEntryService
 	 * If a LIVE profile is provided, it's replaced with the default VOD conversion profile.
 	 *
 	 * @param int $conversionProfileId The conversion profile ID to validate
-	 * @return int The validated/corrected conversion profile ID
+	 * @return int|null The validated/corrected conversion profile ID
 	 * @throws Exception
 	 */
 	protected function ensureVodConversionProfile($conversionProfileId)
@@ -148,7 +148,7 @@ class MediaService extends KalturaEntryService
 		$conversionProfile = conversionProfile2Peer::retrieveByPK($conversionProfileId);
 
 		// Check if profile exists and is NOT a MEDIA (VOD) type
-		if ( !is_null($conversionProfile) && $conversionProfile->getType() != ConversionProfileType::MEDIA )
+		if ( !is_null($conversionProfile) && $conversionProfile->getType() == ConversionProfileType::LIVE_STREAM )
 		{
 			KalturaLog::warning("Conversion profile ID [$conversionProfileId] is a LIVE profile. Replacing with default VOD profile.");
 			$defaultConversionProfile = myPartnerUtils::getConversionProfile2ForPartner( $this->getPartnerId() );
