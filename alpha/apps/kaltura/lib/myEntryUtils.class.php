@@ -327,6 +327,64 @@ class myEntryUtils
 		return $new_text;
 	}
 
+	/**
+	 * Validate if a live entry can be deleted
+	 * Checks streaming status and recorded entry readiness
+	 *
+	 * @param entry $entry The entry to validate
+	 * @param bool $throwException Whether to throw exception on validation failure
+	 * @return bool True if entry can be deleted, false if validation fails
+	 * @throws KalturaAPIException If entry cannot be deleted (when $throwException is true)
+	 */
+	public static function validateLiveEntryCanBeDeleted(entry $entry, $throwException = false)
+	{
+		// Check 1: Cannot delete if entry is currently streaming
+		$connectedEntryServerNodes = EntryServerNodePeer::retrieveByEntryIdAndStatuses($entry->getId(), EntryServerNodePeer::$connectedServerNodeStatuses);
+		if(count($connectedEntryServerNodes))
+		{
+			KalturaLog::info("Live Entry [". $entry->getId() ."] cannot be deleted, while streaming");
+			if($throwException)
+			{
+				throw new KalturaAPIException(KalturaErrors::CANNOT_DELETE_LIVE_ENTRY_WHILE_STREAMING, $entry->getId());
+			}
+			return false;
+		}
+
+		// Check 2: Validate recorded entry status (within 7-day grace period)
+		if($entry->getRecordedEntryId())
+		{
+			$recordedEntry = entryPeer::retrieveByPK($entry->getRecordedEntryId());
+			if($recordedEntry)
+			{
+				//If entry is pending for recording to finish for more than 7 days than it will probably never happen
+				if($recordedEntry->isInsideDeleteGracePeriod())
+				{
+					if(in_array($recordedEntry->getStatus(), array(entryStatus::PENDING, entryStatus::NO_CONTENT, entryStatus::PRECONVERT)))
+					{
+						KalturaLog::info("Live Entry [". $entry->getId() ."] cannot be deleted, associated VOD entry still not in ready status");
+						if($throwException)
+						{
+							throw new KalturaAPIException(KalturaErrors::RECORDED_NOT_READY, $entry->getId());
+						}
+						return false;
+					}
+
+					if(self::shouldServeVodFromLive($recordedEntry))
+					{
+						KalturaLog::info("Live Entry [". $entry->getId() ."] cannot be deleted, entry still beeing handled by recordign engien");
+						if($throwException)
+						{
+							throw new KalturaAPIException(KalturaErrors::RECORDING_FLOW_NOT_COMPLETE, $entry->getId());
+						}
+						return false;
+					}
+				}
+			}
+		}
+
+		return true;
+	}
+
 	// will handle deletion of entries -
 	// 1. change status to ENTRY_STATUS_DELETED
 	// 2. set data to be the "deleted_entry" depending on the media_type of the entry - point to the partner's template if exists
@@ -351,35 +409,8 @@ class myEntryUtils
 
 		if($entry->getType() === entryType::LIVE_STREAM)
 		{
-			$connectedEntryServerNodes = EntryServerNodePeer::retrieveByEntryIdAndStatuses($entry->getId(), EntryServerNodePeer::$connectedServerNodeStatuses);
-			if(count($connectedEntryServerNodes))
-			{
-				KalturaLog::info("Live Entry [". $entry->getId() ."] cannot be deleted, while streaming");
-				throw new KalturaAPIException(KalturaErrors::CANNOT_DELETE_LIVE_ENTRY_WHILE_STREAMING, $entry->getId());
-			}
-
-			if($entry->getRecordedEntryId())
-			{
-				$recordedEntry = entryPeer::retrieveByPK($entry->getRecordedEntryId());
-				if($recordedEntry)
-				{
-					//If entry is pending for recording to finish for more than 7 days than it will probably never happen
-					if($recordedEntry->isInsideDeleteGracePeriod())
-					{
-						if(in_array($recordedEntry->getStatus(), array(entryStatus::PENDING, entryStatus::NO_CONTENT, entryStatus::PRECONVERT)))
-						{
-							KalturaLog::info("Live Entry [". $entry->getId() ."] cannot be deleted, associated VOD entry still not in ready status");
-							throw new KalturaAPIException(KalturaErrors::RECORDED_NOT_READY, $entry->getId());
-						}
-
-						if(myEntryUtils::shouldServeVodFromLive($recordedEntry))
-						{
-							KalturaLog::info("Live Entry [". $entry->getId() ."] cannot be deleted, entry still beeing handled by recordign engien");
-							throw new KalturaAPIException(KalturaErrors::RECORDING_FLOW_NOT_COMPLETE, $entry->getId());
-						}
-					}
-				}
-			}
+			// Validate deletion (throws exception if invalid)
+			self::validateLiveEntryCanBeDeleted($entry, true);
 		}
 
 		if($entry->getSourceType() == EntrySourceType::KALTURA_RECORDED_LIVE)
