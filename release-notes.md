@@ -1,7 +1,7 @@
 # Ursa-22.19.0
-## Add kafka event notification for PF integration ##
+## Add Kafka event notification for PF integration ##
 - Issue Type: Task
-- Issue ID: MCRSRV-281
+- Issue ID: PLAT-25807
 
 ### Configuration ###
     Replace all tokens (SERVICE_URL, ADMIN_CONSOLE_PARTNER_ADMIN_SECRET) from the template XML file below and remove ".template" from the file name:
@@ -18,7 +18,7 @@
     Create entry_pf topic in your Kafka  
 
 ### Deployment scripts ###
-	php /opt/kaltura/app/deployment/updates/scripts/2025_06_16_add_schedule_event_events.php
+	php /opt/kaltura/app/deployment/updates/scripts/2026_04_28_add_pf_entry_events.php
 
 # Venus-22.18.0
 ## Allow video avatar partner to be a reach vendor ##
