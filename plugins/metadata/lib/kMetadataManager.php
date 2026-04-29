@@ -796,6 +796,12 @@ class kMetadataManager
 		$key = $metadata->getSyncKey(Metadata::FILE_SYNC_METADATA_DATA);
 		$xmlString = kFileSyncUtils::file_get_contents($key);
 
+		if (empty($xmlString))
+		{
+			KalturaLog::err("Metadata xml is empty for metadata id [{$metadata->getId()}] and key [$key] - skipping");
+			return;
+		}
+
 		try{
 			$xml = new KDOMDocument();
 			$xml->loadXML($xmlString);
