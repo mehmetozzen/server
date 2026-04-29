@@ -798,7 +798,7 @@ class kMetadataManager
 
 		if (empty($xmlString))
 		{
-			KalturaLog::err("Metadata xml is empty for metadata id [{$metadata->getId()}] and key [$key] - skipping");
+			KalturaLog::notice("Metadata xml is empty for metadata id [{$metadata->getId()}] and key [$key] - skipping");
 			return;
 		}
 
