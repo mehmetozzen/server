@@ -795,6 +795,15 @@ class CrossKalturaDistributionEngine extends DistributionEngine implements
 		);
 	}
 
+	protected function getMetadataListArgs(KalturaMetadata $targetObject)
+	{
+		$filter = new KalturaMetadataFilter();
+		$filter->metadataProfileIdEqual = $targetObject->metadataProfileId;
+		$filter->metadataObjectTypeEqual = KalturaMetadataObjectType::ENTRY;
+		$filter->objectIdEqual = $targetObject->objectId;
+		return array($filter);
+	}
+
 	/**
 	 * @return array of arguments that should be passed to cuepoint->add api action
 	 * @param KalturaCuePoint $newObj
@@ -868,7 +877,7 @@ class CrossKalturaDistributionEngine extends DistributionEngine implements
 	 * @param string $updateArgsFunc special function to extract arguments for the UPDATE api action
 	 * @return array of the synced objects
 	 */
-	protected function syncTargetEntryObjects(KalturaServiceBase $targetClientService, $newObjects, $sourceObjects, $distributedMap, $targetEntryId, $addArgsFunc = null, $updateArgsFunc = null)
+	protected function syncTargetEntryObjects(KalturaServiceBase $targetClientService, $newObjects, $sourceObjects, $distributedMap, $targetEntryId, $addArgsFunc = null, $updateArgsFunc = null, $listArgsFunc = null)
 	{
 		$syncedObjects = array();
 		$distributedMap = empty($distributedMap) ? array() : unserialize($distributedMap);
@@ -919,15 +928,32 @@ class CrossKalturaDistributionEngine extends DistributionEngine implements
 				else
 				{
 					// this object was not previously distributed - should add new target object
-					$addArgs = null;
-					if (is_null($addArgsFunc)) {
-						$addArgs = array($targetEntryId, $targetObject);
-					}
-					else {
-						$addArgs = call_user_func_array(array($this, $addArgsFunc), array($targetObject));
+					// but first check if it already exists on the target (e.g. manually created)
+					$existingTargetId = null;
+					if (!is_null($listArgsFunc))
+					{
+						$listArgs = call_user_func_array(array($this, $listArgsFunc), array($targetObject));
+						$listResponse = call_user_func_array(array($targetClientService, 'listAction'), $listArgs);
+						$existingTargetId = $listResponse->totalCount > 0 && isset($listResponse->objects[0]) ? $listResponse->objects[0]->id : null;
 					}
 
-					$syncedObjects[$sourceObjectId] = call_user_func_array(array($targetClientService, 'add'), $addArgs);
+					if (!is_null($existingTargetId))
+					{
+						KalturaLog::info('Source id ['.$sourceObjectId.'] not in distributed map but target object already exists with id ['.$existingTargetId.'] - updating instead of adding');
+						$updateArgs = call_user_func_array(array($this, $updateArgsFunc), array($existingTargetId, $targetObject));
+						$syncedObjects[$sourceObjectId] = call_user_func_array(array($targetClientService, 'update'), $updateArgs);
+					}
+					else
+					{
+						$addArgs = null;
+						if (is_null($addArgsFunc)) {
+							$addArgs = array($targetEntryId, $targetObject);
+						}
+						else {
+							$addArgs = call_user_func_array(array($this, $addArgsFunc), array($targetObject));
+						}
+						$syncedObjects[$sourceObjectId] = call_user_func_array(array($targetClientService, 'add'), $addArgs);
+					}
 				}
 			}
 		}
@@ -1061,7 +1087,8 @@ class CrossKalturaDistributionEngine extends DistributionEngine implements
 			$jobData->providerData->distributedMetadata,
 			$targetEntryId,
 			'getMetadataAddArgs',
-			'getMetadataUpdateArgs'
+			'getMetadataUpdateArgs',
+			'getMetadataListArgs'
 		);
 
 
