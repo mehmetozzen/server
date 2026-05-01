@@ -192,10 +192,17 @@ class dfxpCaptionsContentManager extends kCaptionsContentManager
 	 */
 	public function parse($content)
 	{
+		$content= trim($content, " \r\n\t");
+		if (empty($content))
+		{
+			KalturaLog::notice('Caption content is empty - skipping parse');
+			return array();
+		}
+		
 		$xml = new KDOMDocument();
 		try
 		{
-			@$xml->loadXML(trim($content, " \r\n\t"));
+			@$xml->loadXML($content);
 		}
 		catch(Exception $e)
 		{
@@ -270,6 +277,12 @@ class dfxpCaptionsContentManager extends kCaptionsContentManager
 		try
 		{
 			$content = trim($content, " \r\n\t");
+			if (empty($content))
+			{
+				KalturaLog::notice('Caption content is empty - skipping buildFile');
+				return '';
+			}
+			
 			$xml->loadXML($content);
 		}
 		catch(Exception $e)
