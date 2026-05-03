@@ -22,7 +22,7 @@
                 <automaticDispatchEnabled>1</automaticDispatchEnabled>
                 <eventType>3</eventType> <!-- EventNotificationEventType::OBJECT_CHANGED -->
                 <eventObjectType>1</eventObjectType> <!-- EventNotificationEventObjectType::ENTRY -->
-                <topicName>entry_pf</topicName>
+                <topicName>path_factory</topicName>
                 <partitionKey>id</partitionKey>
                 <messageFormat>1</messageFormat>
                 <apiObjectType>KalturaBaseEntry</apiObjectType>
@@ -38,7 +38,7 @@
                 <automaticDispatchEnabled>1</automaticDispatchEnabled>
                 <eventType>7</eventType> <!-- EventNotificationEventType::OBJECT_DELETED -->
                 <eventObjectType>1</eventObjectType> <!-- EventNotificationEventObjectType::ENTRY -->
-                <topicName>entry_pf</topicName>
+                <topicName>path_factory</topicName>
                 <partitionKey>id</partitionKey>
                 <messageFormat>1</messageFormat>
                 <apiObjectType>KalturaBaseEntry</apiObjectType>
