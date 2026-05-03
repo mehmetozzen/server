@@ -6,6 +6,7 @@
 ### Configuration ###
     Replace all tokens (SERVICE_URL, ADMIN_CONSOLE_PARTNER_ADMIN_SECRET) from the template XML file below and remove ".template" from the file name:
 	/opt/kaltura/app/deployment/updates/scripts/xml/notifications/2026_04_28_add_kafka_entry_pf_notifications.template.xml
+	/opt/kaltura/app/deployment/updates/scripts/xml/notifications/2026_05_01_add_kafka_captions_pf_notifications.template.xml
 
     Add the following to admin.ini:
     moduls.enablePfIntegration.enabled = true
@@ -15,10 +16,11 @@
     moduls.enablePfIntegration.group = GROUP_ENABLE_DISABLE_FEATURES
 
     Kafka:
-    Create entry_pf topic in your Kafka  
+    Create path_factory topic in your Kafka
 
 ### Deployment scripts ###
 	php /opt/kaltura/app/deployment/updates/scripts/2026_04_28_add_pf_entry_events.php
+    php /opt/kaltura/app/deployment/updates/scripts/2026_05_01_add_pf_captions_events.php
 
 # Venus-22.18.0
 ## Allow video avatar partner to be a reach vendor ##

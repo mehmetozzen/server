@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xml>
+    <config>
+        <serviceUrl>@SERVICE_URL@</serviceUrl>
+        <partnerId>-2</partnerId>
+        <clientTag>Stand alone php 1.0.0</clientTag>
+        <curlTimeout>30</curlTimeout>
+        <userAgent>Stand alone php 1.0.0</userAgent>
+    </config>
+    <session>
+        <partnerId>-2</partnerId>
+        <secret>@ADMIN_CONSOLE_PARTNER_ADMIN_SECRET@</secret>
+        <sessionType>2</sessionType>
+    </session>
+
+    <multirequest>
+        <request service="eventNotificationTemplate" action="add" plugin="eventNotification" partnerId="0">
+            <template objectType="KalturaKafkaNotificationTemplate">
+                <name>Captions created</name>
+                <systemName>KAFKA_CAPTIONS_CREATED_PF</systemName>
+                <description>Kafka notification template to be sent to PF topic when captions is created</description>
+                <automaticDispatchEnabled>1</automaticDispatchEnabled>
+                <eventType>5</eventType> <!-- EventNotificationEventType::OBJECT_CREATED -->
+                <eventObjectType>captionAssetEventNotifications.CaptionAsset</eventObjectType> <!-- EventNotificationEventObjectType::CAPTIONASSET -->
+                <topicName>path_factory</topicName>
+                <partitionKey>id</partitionKey>
+                <messageFormat>1</messageFormat>
+                <apiObjectType>KalturaCaptionAsset</apiObjectType>
+                <requiresPermissions>FEATURE_ENABLE_PF_INTEGRATION</requiresPermissions>
+            </template>
+        </request>
+
+        <request service="eventNotificationTemplate" action="add" plugin="eventNotification" partnerId="0">
+            <template objectType="KalturaKafkaNotificationTemplate">
+                <name>Captions Updated PF</name>
+                <systemName>KAFKA_CAPTIONS_UPDATED_PF</systemName>
+                <description>Kafka notification template to be sent to PF topic when captions is updated</description>
+                <automaticDispatchEnabled>1</automaticDispatchEnabled>
+                <eventType>3</eventType> <!-- EventNotificationEventType::OBJECT_CHANGED -->
+                <eventObjectType>captionAssetEventNotifications.CaptionAsset</eventObjectType> <!-- EventNotificationEventObjectType::CAPTIONASSET -->
+                <topicName>path_factory</topicName>
+                <partitionKey>id</partitionKey>
+                <messageFormat>1</messageFormat>
+                <apiObjectType>KalturaCaptionAsset</apiObjectType>
+                <requiresPermissions>FEATURE_ENABLE_PF_INTEGRATION</requiresPermissions>
+            </template>
+        </request>
+
+        <request service="eventNotificationTemplate" action="add" plugin="eventNotification" partnerId="0">
+            <template objectType="KalturaKafkaNotificationTemplate">
+                <name>Captions Deleted</name>
+                <systemName>KAFKA_CAPTIONS_DELETED_PF</systemName>
+                <description>Kafka notification template to be sent to PF topic when captions is deleted</description>
+                <automaticDispatchEnabled>1</automaticDispatchEnabled>
+                <eventType>7</eventType> <!-- EventNotificationEventType::OBJECT_DELETED -->
+                <eventObjectType>captionAssetEventNotifications.CaptionAsset</eventObjectType> <!-- EventNotificationEventObjectType::CAPTIONASSET -->
+                <topicName>path_factory</topicName>
+                <partitionKey>id</partitionKey>
+                <messageFormat>1</messageFormat>
+                <apiObjectType>KalturaCaptionAsset</apiObjectType>
+                <requiresPermissions>FEATURE_ENABLE_PF_INTEGRATION</requiresPermissions>
+            </template>
+        </request>
+    </multirequest>
+</xml>
