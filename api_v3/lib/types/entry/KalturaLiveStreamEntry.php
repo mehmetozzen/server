@@ -240,7 +240,12 @@ class KalturaLiveStreamEntry extends KalturaLiveEntry
 		}
 
 		// Calculate readyForDeletion property (without throwing exceptions)
-		$this->readyForDeletion = myEntryUtils::validateLiveEntryCanBeDeleted($dbObject, false);
+		try {
+			myEntryUtils::validateLiveEntryCanBeDeleted($dbObject);
+			$this->readyForDeletion = true;
+		} catch (KalturaAPIException $e) {
+			$this->readyForDeletion = false;
+		}
 
 		parent::doFromObject($dbObject, $responseProfile);
 	}
