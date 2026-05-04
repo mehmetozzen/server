@@ -325,6 +325,8 @@ class YoutubeApiDistributionEngine extends DistributionEngine implements
 		$snippet['description'] = self::sanitizeFromHtmlTags($this->getValueForField(KalturaYouTubeApiDistributionField::MEDIA_DESCRIPTION));
 		$snippet['tags'] = explode(',', self::sanitizeFromHtmlTags($this->getValueForField(KalturaYouTubeApiDistributionField::MEDIA_KEYWORDS)));
 		$snippet['category'] = $this->translateCategory($youtube, $distributionProfile, $this->getValueForField(KalturaYouTubeApiDistributionField::MEDIA_CATEGORY));
+		// YouTube rejects 'und' (undetermined) as an invalid language code on update even if it stored it originally
+		$snippet['defaultAudioLanguage'] = ($snippet['defaultAudioLanguage'] === 'und') ? null : $snippet['defaultAudioLanguage'];
 
 		$status = $video['status'];
 		$status['privacyStatus'] = 'private';
