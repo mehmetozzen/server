@@ -25,4 +25,5 @@ class KalturaESearchBaseUserFieldName extends KalturaStringEnum
 	const IS_ADMIN = 'is_admin';
 	const LOGIN_ENABLED = 'login_enabled';
 	const CAPABILITIES = 'capabilities';
+	const TYPE = 'user_type';
 }
