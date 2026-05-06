@@ -47,12 +47,24 @@ class KAsyncExportCsv extends KJobHandlerWorker
 		$this->updateJob($job, "Start generating csv for export", KalturaBatchJobStatus::PROCESSING);
 		self::impersonate($job->partnerId);
 
-		// Create local path for csv generation
-		$directory = self::$taskConfig->params->localTempPath . DIRECTORY_SEPARATOR . $job->partnerId;
+		// Check if we should use shared storage directly for large exports
+		$engine = KObjectExportEngine::getInstance($job->jobSubType);
+		$useSharedStorage = $engine->shouldUseSharedStorage($data);
+
+		if ($useSharedStorage)
+		{
+			$baseDir = isset($data->sharedOutputPath) ? $data->sharedOutputPath : self::$taskConfig->params->sharedTempPath;
+		}
+		else
+		{
+			$baseDir = self::$taskConfig->params->localTempPath;
+		}
+
+		$directory = $baseDir . DIRECTORY_SEPARATOR . $job->partnerId . DIRECTORY_SEPARATOR;
 		KBatchBase::createDir($directory);
-		$filePath = $directory . DIRECTORY_SEPARATOR . 'export_' .$job->partnerId.'_'.$job->id . '.csv';
+		$filePath = $directory . 'export_' . $job->partnerId . '_' . $job->id . '.csv';
 		$data->outputPath = $filePath;
-		KalturaLog::info("Temp file path: [$filePath]");
+		KalturaLog::info("File path: [$filePath]");
 
 		//fill the csv with users data
 		$csvFile = fopen($filePath,"w");
@@ -60,8 +72,7 @@ class KAsyncExportCsv extends KJobHandlerWorker
 		// Write BOM character sequence to fix UTF-8 in Excel
 		$BOM = "\xEF\xBB\xBF";
 		fputs($csvFile, $BOM);
-		
-		$engine = KObjectExportEngine::getInstance($job->jobSubType);
+
 		$engine->fillCsv($csvFile, $data);
 		
 		fclose($csvFile);
@@ -74,8 +85,22 @@ class KAsyncExportCsv extends KJobHandlerWorker
 			return $this->closeJob($job, KalturaBatchJobErrorTypes::KALTURA_API, $e->getCode(), $e->getMessage(), KalturaBatchJobStatus::RETRY);
 		}
 
-		// Copy the report to shared location.
-		$this->moveFile($job, $data, $job->partnerId);
+		// Copy the report to shared location only if using local storage
+		if (!$useSharedStorage)
+		{
+			$this->moveFile($job, $data, $job->partnerId);
+		}
+		else
+		{
+			// File is already on shared storage, just verify and close job
+			$this->setFilePermissions($data->outputPath);
+			if(!$this->checkFileExists($data->outputPath, kFile::fileSize($data->outputPath)))
+			{
+				return $this->closeJob($job, KalturaBatchJobErrorTypes::APP, KalturaBatchJobAppErrors::OUTPUT_FILE_DOESNT_EXIST, 'Failed to create csv file on shared storage', KalturaBatchJobStatus::RETRY);
+			}
+			return $this->closeJob($job, null, null, 'CSV created successfully on shared storage', KalturaBatchJobStatus::FINISHED, $data);
+		}
+
 		return $job;
 	}
 

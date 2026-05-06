@@ -6,6 +6,8 @@
  */
 abstract class KMappedObjectExportEngine extends KObjectExportEngine
 {
+	const MAX_ELEMENTS_BEFORE_SHARED_STORAGE = 100000;
+
 	abstract protected function getFilterOrderBy();
 	abstract protected function getItemList($filter, $pager);
 	abstract protected function getDefaultHeaderRowToCsv();
@@ -29,6 +31,36 @@ abstract class KMappedObjectExportEngine extends KObjectExportEngine
 			}
 		}
 		return $ret;
+	}
+
+	/**
+	 * Check if the export will exceed the threshold and needs to be written directly to shared storage
+	 * @param $data
+	 * @return bool
+	 */
+	public function shouldUseSharedStorage(&$data)
+	{
+		$filter = clone $data->filter;
+		$pager = new KalturaFilterPager();
+		$pager->pageSize = 1;
+		$pager->pageIndex = 1;
+
+		try
+		{
+			$itemList = $this->getItemList($filter, $pager);
+			$totalCount = isset($itemList->totalCount) ? $itemList->totalCount : 0;
+			if ($totalCount > self::MAX_ELEMENTS_BEFORE_SHARED_STORAGE)
+			{
+				KalturaLog::info("Large export detected ($totalCount > " . self::MAX_ELEMENTS_BEFORE_SHARED_STORAGE . "), will use shared storage directly");
+				return true;
+			}
+		}
+		catch(Exception $e)
+		{
+			KalturaLog::info('Could not get total count: ' . $e->getMessage());
+		}
+
+		return false;
 	}
 
 	public function fillCsv (&$csvFile, &$data)
