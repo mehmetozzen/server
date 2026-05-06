@@ -1,4 +1,17 @@
 # Ursa-22.19.0
+## Add HTTP event notification for category entry and category user ##
+- Issue Type: Task
+- Issue ID: SUP-52293
+
+### Configuration ###
+    Replace all tokens (SERVICE_URL, ADMIN_CONSOLE_PARTNER_ADMIN_SECRET) from the template XML file below and remove ".template" from the file name:
+	/opt/kaltura/app/deployment/updates/scripts/xml/notifications/2026_05_05_http_category_entry_notifications.template.xml
+	/opt/kaltura/app/deployment/updates/scripts/xml/notifications/2026_05_05_http_category_user_notifications.template.xml
+
+
+### Deployment scripts ###
+	php /opt/kaltura/app/deployment/updates/scripts/2026_05_05_deploy_ctagory_user_and_entry_http_notifications.php
+
 ## Add Kafka event notification for PF integration ##
 - Issue Type: Task
 - Issue ID: PLAT-25807
