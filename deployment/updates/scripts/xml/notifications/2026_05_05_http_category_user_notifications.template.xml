@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xml>
+    <config>
+        <serviceUrl>@SERVICE_URL@</serviceUrl>
+        <partnerId>-2</partnerId>
+        <clientTag>Stand alone php 1.0.0</clientTag>
+        <curlTimeout>30</curlTimeout>
+        <userAgent>Stand alone php 1.0.0</userAgent>
+    </config>
+    <session>
+        <partnerId>-2</partnerId>
+        <secret>@ADMIN_CONSOLE_PARTNER_ADMIN_SECRET@</secret>
+        <sessionType>2</sessionType>
+    </session>
+
+    <multirequest>
+        <request service="eventNotificationTemplate" action="add" plugin="eventNotification" partnerId="0">
+            <template objectType="KalturaHttpNotificationTemplate">
+                <name>User was added to category</name>
+                <systemName>Http_User_Added_To_Category</systemName>
+                <description>Http notification template to be sent when a used is added to a category</description>
+                <automaticDispatchEnabled>1</automaticDispatchEnabled>
+                <eventType>2</eventType> <!-- EventNotificationEventType::OBJECT_ADDED -->
+                <eventObjectType>12</eventObjectType> <!-- EventNotificationEventObjectType::CATEGORYKUSER -->
+                <eventConditions objectType="array">
+                    <item objectType="KalturaEventFieldCondition">
+                        <description>Status is active, see KalturaCategoryUserStatus</description>
+                        <field objectType="KalturaEvalBooleanField">
+                            <code>$scope->getObject() instanceof categoryKuser &amp;&amp; $scope->getObject()->getStatus() == CategoryKuserStatus::ACTIVE</code>
+                        </field>
+                    </item>
+                </eventConditions>
+                <method>2</method> <!-- KalturaHttpNotificationMethod::POST -->
+            </template>
+        </request>
+        <request service="eventNotificationTemplate" action="updateStatus" plugin="eventNotification">
+            <id>{1:result:id}</id>
+            <status>1</status>
+            <!-- EventNotificationTemplateStatus::DISABLED -->
+        </request>
+
+        <request service="eventNotificationTemplate" action="add" plugin="eventNotification" partnerId="0">
+            <template objectType="KalturaHttpNotificationTemplate">
+                <name>User was removed from category</name>
+                <systemName>User_Was_Removed_From_Category</systemName>
+                <description>Http notification template to be sent when user was removed from category</description>
+                <automaticDispatchEnabled>1</automaticDispatchEnabled>
+                <eventType>7</eventType> <!-- EventNotificationEventType::OBJECT_DELETED -->
+                <eventObjectType>12</eventObjectType> <!-- EventNotificationEventObjectType::CATEGORYKUSER -->
+                <eventConditions objectType="array">
+                    <item objectType="KalturaEventFieldCondition">
+                        <description>Object type verified</description>
+                        <field objectType="KalturaEvalBooleanField">
+                            <code>$scope->getObject() instanceof categoryKuser</code>
+                        </field>
+                    </item>
+                </eventConditions>
+                <method>2</method> <!-- KalturaHttpNotificationMethod::POST -->
+            </template>
+        </request>
+        <request service="eventNotificationTemplate" action="updateStatus" plugin="eventNotification">
+            <id>{3:result:id}</id>
+            <status>1</status>
+            <!-- EventNotificationTemplateStatus::DISABLED -->
+        </request>
+    </multirequest>
+</xml>
