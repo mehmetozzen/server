@@ -30,7 +30,18 @@ abstract class KObjectExportEngine
 	}
 	
 	abstract public function fillCsv (&$csvFile, &$data);
-	
+
+	/**
+	 * Check if the export will exceed the threshold and needs to be written directly to shared storage
+	 * Default implementation returns false - subclasses can override
+	 * @param $data
+	 * @return bool
+	 */
+	public function shouldUseSharedStorage(&$data)
+	{
+		return false;
+	}
+
 	/**
 	 * Generate the first csv row containing the fields
 	 */
