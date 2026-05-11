@@ -97,7 +97,14 @@ class KalturaLiveStreamEntry extends KalturaLiveEntry
 	 * @var string
 	 */
 	public $hlsStreamUrl;
-	
+
+	/**
+	 * Indicates whether the live entry is ready to be deleted
+	 * @var bool
+	 * @readonly
+	 */
+	public $readyForDeletion;
+
 	/**
 	 * URL Manager to handle the live stream URL (for instance, add token)
 	 * @var string
@@ -231,6 +238,15 @@ class KalturaLiveStreamEntry extends KalturaLiveEntry
 			$this->secondarySrtStreamId = null;
 			$this->srtPass = null;
 		}
+
+		// Calculate readyForDeletion property (without throwing exceptions)
+		try {
+			myEntryUtils::validateLiveEntryCanBeDeleted($dbObject);
+			$this->readyForDeletion = true;
+		} catch (KalturaAPIException $e) {
+			$this->readyForDeletion = false;
+		}
+
 		parent::doFromObject($dbObject, $responseProfile);
 	}
 	

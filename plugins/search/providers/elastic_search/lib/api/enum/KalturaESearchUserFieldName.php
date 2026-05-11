@@ -5,5 +5,5 @@
  */
 class KalturaESearchUserFieldName extends KalturaESearchBaseUserFieldName
 {
-	const TYPE = 'user_type';
+
 }
