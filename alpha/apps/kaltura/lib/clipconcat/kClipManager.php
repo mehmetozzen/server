@@ -2059,8 +2059,7 @@ class kClipManager implements kBatchJobStatusEventConsumer
 			$mainScaleFilter = $sortedFilters["scale"] . $mainStreamName;
 			$overlayCircleOnVideoFilterStream = "$mainScaleFilter;$mainStreamName";
 		}
-		// shortest to end the stream_loop
-		$overlayCircleOnVideoFilter = $overlayCircleOnVideoFilterStream . "setpts=N/(FRAME_RATE*TB)[bg_r];[bg_r][front_shape]overlay=$overlayPosition:format=auto:shortest=1$composedVideoStreamName";
+		$overlayCircleOnVideoFilter = $overlayCircleOnVideoFilterStream . "setpts=N/(FRAME_RATE*TB)[bg_r];[bg_r][front_shape]overlay=$overlayPosition:format=auto$composedVideoStreamName";
 
 		$mainHasAudio = isset($conversionParams[self::AUDIO_DURATION]) && $conversionParams[self::AUDIO_DURATION] > 0;
 		$secondaryMediaInfo = $this->getResourceEntryMediaInfo($mediaCompositionAttributes);
@@ -2078,9 +2077,8 @@ class kClipManager implements kBatchJobStatusEventConsumer
 		else
 		{
 			// At least one input has audio; any missing stream is replaced by a trimmed silence so
-			// amix:duration=shortest always encounters a finite input even when the main is stream-looped.
 			$defineAudioVolumesFilter = $this->getAudioVolumesFilter($mediaCompositionAttributes, $mainFileNameIndex, $overlayFileNameIndex, $mainHasAudio, $secondaryHasAudio, $sampleRate, $channelLayout, $audioDuration);
-			$combineAudioFilter = "[a_secondary][a_main]amix=inputs=2:duration=shortest:normalize=0:dropout_transition=0[aout]";
+			$combineAudioFilter = "[a_secondary][a_main]amix=inputs=2:normalize=0:dropout_transition=0[aout]";
 		}
 		$audioMapName = '"[aout]"';
 		$audioSection = $combineAudioFilter === '' ? $defineAudioVolumesFilter : "$defineAudioVolumesFilter;$combineAudioFilter";
@@ -2140,8 +2138,6 @@ class kClipManager implements kBatchJobStatusEventConsumer
 			}
 			else if($mediaCompositionAttributes instanceof kOverlayAttributes)
 			{
-				// MUST END the stream_loop, for instance: 1. specify duration 2. pair with a finite stream
-				$cmdFileNames = " -stream_loop -1 -i __inFileName__ ";
 				$filterComplex = $this->getOverlayAttributesFilterComplex($mediaCompositionAttributes, $cmdFileNames, $fileNameIndex, $audioMapName, $sortedFilters, $conversionParams, $composedVideoStreamName);
 			}
 			// scaling or cropping is already done in $filterComplex
