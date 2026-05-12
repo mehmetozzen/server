@@ -23,6 +23,7 @@ class ZoomHelper
 		'speaker_view',
 		'active_speaker',
 		'gallery_view',
+		'sign_interpretation',
 		'audio_only',
 		'audio_transcript',
 		'closed_caption',
