@@ -1,3 +1,17 @@
+# Venus-22.20.0
+## Add flag to display all Content Lab features
+* Issue Type: Task
+* Issue ID: PLAT-25820
+### Deployment ###
+Add the following to admin.ini
+```
+moduls.contentLabDisplayAllFeatures.enabled = true
+moduls.contentLabDisplayAllFeatures.permissionType = 2
+moduls.contentLabDisplayAllFeatures.label = "Display all features in Content Lab"
+moduls.contentLabDisplayAllFeatures.permissionName = FEATURE_CONTENT_LAB_DISPLAY_ALL_FEATURES
+moduls.contentLabDisplayAllFeatures.group = GROUP_ENABLE_DISABLE_FEATURES
+```
+
 # Ursa-22.19.0
 ## Add HTTP event notification for category entry and category user ##
 - Issue Type: Task
