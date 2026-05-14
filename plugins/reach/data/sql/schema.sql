@@ -105,8 +105,8 @@ CREATE TABLE `entry_vendor_task`
 	KEY `partner_id_status_index` (`partner_id`,`status`),
 	KEY `vendor_partner_id_status_index` (`vendor_partner_id`,`status`),
 	KEY `updated_at` (`updated_at`),
-	KEY `entry_id` (`entry_id`)
-	KEY `reach_profile_queue_time` (`reach_profile_id`,`queue_time`)
+	KEY `entry_id` (`entry_id`),
+	KEY `reach_profile_queue_time` (`reach_profile_id`,`queue_time`),
 	KEY `reach_profile_finish_time` (`reach_profile_id`,`finish_time`)
 )Type=InnoDB;
 
