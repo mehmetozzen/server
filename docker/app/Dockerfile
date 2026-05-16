@@ -28,6 +28,17 @@ RUN mkdir -p /opt/kaltura/apps/kmcng && \
     ln -s /opt/kaltura/apps/kmcng/${KMCNG_VERSION} /opt/kaltura/apps/kmcng/latest && \
     rm -rf /tmp/kmcng.zip /tmp/kmcng_extract
 
+# Placeholder pages for analytics sub-apps that require external backends (Druid/Kanalony).
+# Without these, KMC NG loads Apache 404 inside its iframe.
+RUN for dir in \
+        /opt/kaltura/apps/liveanalytics/v2.7.3 \
+        /opt/kaltura/apps/liveDashboard/v1.5.7 \
+        /opt/kaltura/apps/usage-dashboard/v2.0.1 \
+        /opt/kaltura/apps/kmc-analytics/v3.4.2; do \
+    mkdir -p "$dir" && \
+    printf '<!DOCTYPE html><html><body></body></html>\n' > "$dir/index.html"; \
+    done
+
 RUN LDAP_LIBDIR=$(find /usr/lib -name "libldap.so" | head -1 | xargs dirname | sed 's|/usr/||') \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-configure ldap --with-libdir="$LDAP_LIBDIR" \
