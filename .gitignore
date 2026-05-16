@@ -57,3 +57,50 @@ admin_console/lib/Kaltura/Client/
 /vendor/bin/
 /rector.php
 /stan.neon
+
+# Docker: runtime generated files
+.kaltura_installed
+configurations/dc_config.ini
+configurations/batchBase.ini
+apps
+# Docker: runtime-generated configs (from *.template.ini and *.ini.template)
+configurations/.docker_secrets.env
+configurations/*.bak
+configurations/appVersions.ini
+configurations/beacon_rotation.ini
+configurations/db_sync.ini
+configurations/drm.ini
+configurations/elastic.ini
+configurations/elasticDynamicMap.ini
+configurations/facebook.ini
+configurations/kLocalMemCacheConf.ini
+configurations/kRemoteMemCacheConf.ini
+configurations/kafka.ini
+configurations/live.ini
+configurations/rabbit_mq.ini
+configurations/schemaRegistry.ini
+configurations/sip.ini
+configurations/sso.ini
+configurations/vendor.ini
+
+# Docker: client SDK runtime artifacts
+admin_console/lib/LICENSE.txt
+admin_console/lib/README.txt
+var_console/lib/LICENSE.txt
+var_console/lib/README.txt
+var_console/lib/tests/
+
+# Docker: batch runtime artifacts (PID files, leftover @WEB_DIR@ dir from old entrypoint)
+var/
+batch/@WEB_DIR@/
+
+# Docker: generated from .template.ini during container setup
+deployment/base/scripts/init_data/01.Partner.ini
+deployment/base/scripts/init_data/02.StorageProfile.ini
+deployment/base/scripts/init_data/06.FileSync.ini
+deployment/base/scripts/init_data/07.*.ini
+
+# Docker: generated from .template.xml during container setup
+deployment/base/scripts/init_content/*.xml
+!deployment/base/scripts/init_content/media/
+!deployment/base/scripts/init_content/ui_conf/
