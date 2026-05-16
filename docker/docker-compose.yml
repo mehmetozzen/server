@@ -56,6 +56,8 @@ services:
         condition: service_healthy
       memcache:
         condition: service_started
+      bundler:
+        condition: service_healthy
     ports:
       - "80:80"
     volumes:
@@ -74,6 +76,36 @@ services:
       WWW_HOST: ${WWW_HOST:-test.mehmetozen.test}
       ADMIN_CONSOLE_ADMIN_MAIL: ${ADMIN_CONSOLE_ADMIN_MAIL:-admin@kaltura.local}
       ADMIN_CONSOLE_PASSWORD: ${ADMIN_CONSOLE_PASSWORD:-Admin1234!}
+
+  packager:
+    build:
+      context: ..
+      dockerfile: docker/packager/Dockerfile
+    container_name: kaltura_packager
+    depends_on:
+      - kaltura
+    ports:
+      - "88:88"
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  bundler:
+    build:
+      context: ..
+      dockerfile: docker/bundler/Dockerfile
+    container_name: kaltura_bundler
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   batch:
     build:

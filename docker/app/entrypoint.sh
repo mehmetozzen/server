@@ -461,6 +461,10 @@ SQL
     KMCNG_VER=$(awk -F'=' '/^\[kmcng\]/{f=1} f && /^kmcng_version/{gsub(/ /,"",$2); print $2; exit}' \
         "$APP_DIR/configurations/base.ini" 2>/dev/null)
     KMCNG_VER="${KMCNG_VER:-v7.20.0}"
+    # Resolve actual player version from the bundler service so conf_vars has a real semver
+    # (version_compare('{latest}', '1.9.0') returns -1, forcing the old UIConf format which
+    # the v3.x pre-built player cannot read — real version number fixes the format selection)
+    PLAYER_VER=$(curl -sf http://bundler:8080/version 2>/dev/null || echo "3.17.82")
     mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 kaltura <<SQL
 INSERT INTO ui_conf (obj_type, partner_id, subp_id, name, width, height, swf_url, tags, status, creation_mode, created_at, updated_at)
 SELECT 8, 0, 0, 'KMCng Player', '560', '395', '/flash/kdp3/v3.9.9/kdp3.swf',
@@ -469,7 +473,7 @@ FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM ui_conf WHERE partner_id=0 AND tags LI
 
 INSERT INTO ui_conf (obj_type, partner_id, subp_id, name, width, height, swf_url, conf_vars, tags, status, creation_mode, created_at, updated_at)
 SELECT 1, 0, 0, 'KMCng Player V7', '528', '327', '/',
-       '{"kaltura-ovp-player":"{latest}","playkit-youtube":"{latest}","playkit-ivq":"{latest}","playkit-kaltura-cuepoints":"{latest}","playkit-kaltura-live":"{latest}"}',
+       '{"kaltura-ovp-player":"${PLAYER_VER}","playkit-youtube":"${PLAYER_VER}","playkit-ivq":"${PLAYER_VER}","playkit-kaltura-cuepoints":"${PLAYER_VER}","playkit-kaltura-live":"${PLAYER_VER}"}',
        CONCAT('kalturaPlayerJs,player,ovp,KMCngV7,', '${KMCNG_VER}'), 2, 2, NOW(), NOW()
 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM ui_conf WHERE partner_id=0 AND tags LIKE '%KMCngV7%' AND tags LIKE '%${KMCNG_VER}%');
 SQL
