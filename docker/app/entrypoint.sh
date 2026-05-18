@@ -176,6 +176,7 @@ generate_ini_from_template() {
         -e "s|@MEMCACHED_HOSTNAME@|memcache|g" \
         -e "s|@MEMCACHED_PORT@|11211|g" \
         -e "s|@CONTACT_URL@|https://corp.kaltura.com/company/contact-us/|g" \
+        -e "s|@INERNAL_BUNDLER_URL@|http://bundler:8080|g" \
         -e "s|@[A-Za-z_][A-Za-z0-9_]*@||g" \
         -e "/^[[:space:]]*=/s|^|;|" \
         "$TMPL" > "$DEST"
