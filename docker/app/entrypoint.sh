@@ -37,7 +37,11 @@ setup_apache() {
     {
         printf '<VirtualHost *:80>\n'
         printf '    ServerName %s\n' "$WWW_HOST"
-        printf '%s\n' "$BODY"
+        if [ "$SERVICE_PROTOCOL" = "https" ]; then
+            printf '    Redirect permanent / https://%s/\n' "$WWW_HOST"
+        else
+            printf '%s\n' "$BODY"
+        fi
         printf '</VirtualHost>\n'
         if [ "$SERVICE_PROTOCOL" = "https" ]; then
             a2enmod ssl > /dev/null 2>&1 || true
