@@ -522,5 +522,109 @@ echo "[kaltura] Admin: $ADMIN_EMAIL / $ADMIN_PASS"
 # Ensure all web content dirs created during init are writable by www-data
 chown -R www-data:www-data "$WEB_DIR/content" "$WEB_DIR/cache" "$WEB_DIR/tmp" 2>/dev/null || true
 
+# ── html5lib (V2 mwEmbed player) ──────────────────────────────────────────────
+# Copy from image path into the web volume once, then patch for PHP 8.1 compat.
+HTML5LIB_IMAGE="/opt/kaltura/html5lib_image"
+HTML5LIB_WEB="$WEB_DIR/html5/html5lib"
+if [ -d "$HTML5LIB_IMAGE" ]; then
+    for IMG_VER_DIR in "$HTML5LIB_IMAGE"/*/; do
+        VER=$(basename "$IMG_VER_DIR")
+        DEST="$HTML5LIB_WEB/$VER"
+        if [ ! -d "$DEST" ]; then
+            echo "[kaltura] Installing html5lib $VER into web volume..."
+            mkdir -p "$HTML5LIB_WEB"
+            cp -a "$IMG_VER_DIR" "$DEST"
+            chown -R www-data:www-data "$DEST"
+        fi
+    done
+fi
+
+# LocalSettings.php, PHP 8.1 patches, conf files — run for every installed version
+[ ! -e "$WEB_DIR/app" ] && ln -sf "$APP_DIR" "$WEB_DIR/app"
+if [ -d "$HTML5LIB_WEB" ]; then
+    for VER_DIR in "$HTML5LIB_WEB"/*/; do
+        [ -d "$VER_DIR" ] || continue
+
+        # LocalSettings.php — required by mwEmbedFrame bootstrap
+        if [ ! -f "$VER_DIR/LocalSettings.php" ] && [ -f "$VER_DIR/LocalSettings.KalturaPlatform.php" ]; then
+            echo "[kaltura] Creating LocalSettings.php for $(basename $VER_DIR)..."
+            printf '<?php require_once(dirname(__FILE__).'\''/LocalSettings.KalturaPlatform.php'\'');\n' \
+                > "$VER_DIR/LocalSettings.php"
+        fi
+
+        # PHP 8.0+ rejects function __autoload() at compile time even in dead code
+        AUTOLOADER="$VER_DIR/includes/MwEmbedAutoLoader.php"
+        if [ -f "$AUTOLOADER" ] && grep -q 'function __autoload(' "$AUTOLOADER" 2>/dev/null; then
+            echo "[kaltura] Patching MwEmbedAutoLoader.php PHP 8.1 compat ($(basename $VER_DIR))..."
+            sed -i 's/function __autoload(/function mwembed_php8_compat_autoload(/' "$AUTOLOADER"
+        fi
+
+        # PHP 8.0+ removed unparenthesized chained ternary — line 462 of EntryResult.php
+        ENTRY_RESULT="$VER_DIR/modules/KalturaSupport/EntryResult.php"
+        if [ -f "$ENTRY_RESULT" ] \
+            && sed -n '462p' "$ENTRY_RESULT" | grep -q 'isset' \
+            && ! sed -n '462p' "$ENTRY_RESULT" | grep -q '(isset'; then
+            echo "[kaltura] Patching EntryResult.php PHP 8.0 ternary compat ($(basename $VER_DIR))..."
+            sed -i '462{s/isset/(isset/; s/null;\r\{0,1\}/null);/}' "$ENTRY_RESULT"
+        fi
+    done
+fi
+
+# ── V2 uiConf: fix html5_url {latest} and wire up file_sync records ───────────
+# insertDefaults.php creates partner uiconfs via raw SQL (bypasses Kaltura API),
+# so no conf file or file_sync record is created. We link each partner V2 uiconf
+# to the system uiconf's (partner_id=0) existing file_sync record — same physical
+# file, no copy needed, batch workers won't delete READY records.
+# html5_url with {latest} also needs resolving: embedIframeAction handles it but
+# mwEmbedFrame reads html5_url directly from uiconf.get inside the iframe.
+mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 kaltura <<SQL 2>/dev/null
+UPDATE ui_conf
+SET html5_url   = REPLACE(html5_url, '{latest}', 'v2.7.4'),
+    custom_data = 'a:1:{s:17:"conf_file_version";d:2;}'
+WHERE partner_id > 0
+  AND html5_url LIKE '%{latest}%'
+  AND tags NOT LIKE '%kalturaPlayerJs%';
+
+INSERT INTO file_sync
+    (partner_id, object_type, object_id, object_sub_type, version, original, status, dc,
+     file_root, file_path, file_size, created_at, updated_at, ready_at)
+SELECT
+    uc.partner_id, 2, CAST(uc.id AS CHAR), 1,
+    fs.version, 1, fs.status, fs.dc,
+    fs.file_root, fs.file_path, fs.file_size,
+    NOW(), NOW(), NOW()
+FROM ui_conf uc
+CROSS JOIN (
+    SELECT * FROM file_sync
+    WHERE object_type=2 AND object_sub_type=1 AND status=2
+      AND partner_id=0 AND file_size > 1000
+    ORDER BY id LIMIT 1
+) fs
+WHERE uc.partner_id > 0
+  AND uc.tags NOT LIKE '%kalturaPlayerJs%'
+  AND CAST(uc.id AS CHAR) NOT IN (
+      SELECT object_id FROM file_sync
+      WHERE object_type=2 AND object_sub_type=1 AND status=2
+  );
+SQL
+echo "[kaltura] V2 uiConf file_sync records ensured."
+
+# ── Widgets: every positive partner needs a _<id> widget for widget sessions ───
+mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 kaltura <<SQL 2>/dev/null
+INSERT IGNORE INTO widget (id, partner_id, subp_id, created_at, updated_at)
+SELECT CONCAT('_', id), id, id * 100, NOW(), NOW()
+FROM partner
+WHERE id > 0
+  AND CONCAT('_', id) NOT IN (SELECT id FROM widget);
+SQL
+
+# ── appVersions.ini: set html5_version so embedIframeJs can serve kWidget JS ──
+# embedIframeJsAction reads html5_version; if empty it exits with "version not found"
+APPVERSIONS="$APP_DIR/configurations/appVersions.ini"
+if [ -f "$APPVERSIONS" ] && grep -qE '^html5_version\s*=\s*$' "$APPVERSIONS" 2>/dev/null; then
+    sed -i "s|^html5_version = *$|html5_version = v2.7.4|" "$APPVERSIONS"
+    echo "[kaltura] Set html5_version = v2.7.4 in appVersions.ini"
+fi
+
 echo "[kaltura] Starting Apache..."
 exec apache2-foreground

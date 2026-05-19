@@ -28,6 +28,17 @@ RUN mkdir -p /opt/kaltura/apps/kmcng && \
     ln -s /opt/kaltura/apps/kmcng/${KMCNG_VERSION} /opt/kaltura/apps/kmcng/latest && \
     rm -rf /tmp/kmcng.zip /tmp/kmcng_extract
 
+# thumbnail-embed.js is loaded by playerWrapper.html from an external CDN
+# (https://static.kaltura.com). Download it at build time and patch the reference
+# so the Share & Embed preview works in fully local environments.
+RUN curl -sL "https://static.kaltura.com/content/static/player-scripts/thumbnail-embed.js" \
+        -o /tmp/thumbnail-embed.js \
+    && cp /tmp/thumbnail-embed.js /opt/kaltura/apps/kmcng/${KMCNG_VERSION}/public/thumbnail-embed.js \
+    && rm /tmp/thumbnail-embed.js \
+    && sed -i \
+        's|https://static\.kaltura\.com/content/static/player-scripts/thumbnail-embed\.js|thumbnail-embed.js|g' \
+        /opt/kaltura/apps/kmcng/${KMCNG_VERSION}/public/playerWrapper.html
+
 # Placeholder pages for analytics sub-apps that require external backends (Druid/Kanalony).
 # Without these, KMC NG loads Apache 404 inside its iframe.
 RUN for dir in \
@@ -65,6 +76,16 @@ RUN pecl install memcache && docker-php-ext-enable memcache
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && git clone --depth 1 https://github.com/kaltura/clients-generator.git /opt/kaltura/clients-generator \
     && apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
+# html5lib (mwEmbed V2 player) — stored OUTSIDE the kaltura_web volume so the
+# named volume cannot shadow it. entrypoint.sh copies it in on first run.
+ARG HTML5LIB_VERSION=v2.7.4
+RUN curl -fsSL "https://github.com/kaltura/mwEmbed/archive/refs/heads/master.tar.gz" \
+        -o /tmp/mwembed.tar.gz \
+    && mkdir -p /opt/kaltura/html5lib_image \
+    && tar -xzf /tmp/mwembed.tar.gz -C /tmp \
+    && mv /tmp/mwEmbed-master /opt/kaltura/html5lib_image/${HTML5LIB_VERSION} \
+    && rm -f /tmp/mwembed.tar.gz
 
 RUN a2enmod rewrite expires headers deflate filter
 
