@@ -104,3 +104,11 @@ deployment/base/scripts/init_data/07.*.ini
 deployment/base/scripts/init_content/*.xml
 !deployment/base/scripts/init_content/media/
 !deployment/base/scripts/init_content/ui_conf/
+
+# mkcert SSL certificates (local dev, never commit private keys)
+docker/certs/*.pem
+docker/certs/*.key
+docker/certs/*.crt
+
+# Local Docker configuration (contains credentials, never commit)
+docker/kaltura.conf

@@ -1,3 +1,4 @@
+# Usage: docker compose --env-file ./kaltura.conf up -d
 services:
   mysql:
     image: mysql:5.7
@@ -14,7 +15,7 @@ services:
     ports:
       - "3306:3306"
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-kaltura_root}"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -60,22 +61,18 @@ services:
         condition: service_healthy
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ..:/opt/kaltura/app
       - kaltura_web:/opt/kaltura/web
       - kaltura_log:/opt/kaltura/log
       - kaltura_tmp:/opt/kaltura/tmp
+      - ./certs:/opt/kaltura/certs:ro
+    env_file: ./kaltura.conf
     environment:
       DB1_HOST: mysql
       DB1_PORT: "3306"
       DB1_NAME: kaltura
-      DB1_USER: ${DB1_USER:-kaltura}
-      DB1_PASS: ${DB1_PASS:-kaltura123}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-kaltura_root}
-      SERVICE_URL: ${SERVICE_URL:-http://test.mehmetozen.test}
-      WWW_HOST: ${WWW_HOST:-test.mehmetozen.test}
-      ADMIN_CONSOLE_ADMIN_MAIL: ${ADMIN_CONSOLE_ADMIN_MAIL:-admin@kaltura.local}
-      ADMIN_CONSOLE_PASSWORD: ${ADMIN_CONSOLE_PASSWORD:-Admin1234!}
 
   packager:
     build:
@@ -125,15 +122,12 @@ services:
       - kaltura_web:/opt/kaltura/web
       - kaltura_log:/opt/kaltura/log
       - kaltura_tmp:/opt/kaltura/tmp
+      - ./certs:/opt/kaltura/certs:ro
+    env_file: ./kaltura.conf
     environment:
       DB1_HOST: mysql
       DB1_PORT: "3306"
       DB1_NAME: kaltura
-      DB1_USER: ${DB1_USER:-kaltura}
-      DB1_PASS: ${DB1_PASS:-kaltura123}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-kaltura_root}
-      SERVICE_URL: ${SERVICE_URL:-http://test.mehmetozen.test}
-      TIME_ZONE: UTC
 
 volumes:
   mysql_data:

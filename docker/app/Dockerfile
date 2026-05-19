@@ -87,10 +87,10 @@ RUN curl -fsSL "https://github.com/kaltura/mwEmbed/archive/refs/heads/master.tar
     && mv /tmp/mwEmbed-master /opt/kaltura/html5lib_image/${HTML5LIB_VERSION} \
     && rm -f /tmp/mwembed.tar.gz
 
-RUN a2enmod rewrite expires headers deflate filter
+RUN a2enmod rewrite expires headers deflate filter proxy proxy_http
 
 COPY docker/app/php.ini /usr/local/etc/php/conf.d/kaltura.ini
-COPY docker/app/apache-kaltura.conf /etc/apache2/sites-available/000-default.conf
+COPY docker/app/apache-kaltura.conf /etc/apache2/kaltura-vhost-body.template
 
 COPY docker/app/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

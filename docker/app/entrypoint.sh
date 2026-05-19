@@ -11,11 +11,55 @@ DB_USER="${DB1_USER:-kaltura}"
 DB_PASS="${DB1_PASS:-kaltura123}"
 DB_NAME="${DB1_NAME:-kaltura}"
 MYSQL_ROOT_PASS="${MYSQL_ROOT_PASSWORD:-kaltura_root}"
-SERVICE_URL="${SERVICE_URL:-http://test.mehmetozen.test}"
-WWW_HOST="${WWW_HOST:-test.mehmetozen.test}"
+TIME_ZONE="${TIME_ZONE:-UTC}"
+SERVICE_PROTOCOL="${PROTOCOL:-http}"
+SERVICE_PORT=$( [ "$SERVICE_PROTOCOL" = "https" ] && echo 443 || echo 80 )
+WWW_HOST="${WWW_HOST:-kaltura.example.com}"
+SERVICE_URL="${SERVICE_URL:-${SERVICE_PROTOCOL}://${WWW_HOST}}"
 ADMIN_EMAIL="${ADMIN_CONSOLE_ADMIN_MAIL:-admin@kaltura.local}"
 ADMIN_PASS="${ADMIN_CONSOLE_PASSWORD:-Admin1234!}"
 MARKER="$APP_DIR/.kaltura_installed"
+
+# ── Install local CA into container trust store (mkcert HTTPS support) ────────
+if [ -f /opt/kaltura/certs/rootCA.pem ]; then
+    cp /opt/kaltura/certs/rootCA.pem /usr/local/share/ca-certificates/mkcert-rootCA.crt
+    update-ca-certificates --fresh > /dev/null 2>&1
+    echo "[kaltura] Installed mkcert root CA into container trust store."
+fi
+
+# ── Configure Apache VirtualHost from template ─────────────────────────────────
+# Must run before any apache2ctl start so the temp init Apache has Kaltura routes.
+setup_apache() {
+    local BODY_TMPL="/etc/apache2/kaltura-vhost-body.template"
+    local CONF_OUT="/etc/apache2/sites-enabled/000-default.conf"
+    local BODY
+    BODY=$(sed "s|@WWW_HOST@|$WWW_HOST|g" "$BODY_TMPL")
+    {
+        printf '<VirtualHost *:80>\n'
+        printf '    ServerName %s\n' "$WWW_HOST"
+        printf '%s\n' "$BODY"
+        printf '</VirtualHost>\n'
+        if [ "$SERVICE_PROTOCOL" = "https" ]; then
+            a2enmod ssl > /dev/null 2>&1 || true
+            printf '\n<VirtualHost *:443>\n'
+            printf '    ServerName %s\n' "$WWW_HOST"
+            printf '    SSLEngine on\n'
+            printf '    SSLCertificateFile %s\n' "${SSL_CRT_FILE:-/opt/kaltura/certs/server.crt}"
+            printf '    SSLCertificateKeyFile %s\n' "${SSL_KEY_FILE:-/opt/kaltura/certs/server.key}"
+            [ -n "${SSL_CA_FILE:-}" ] && printf '    SSLCertificateChainFile %s\n' "$SSL_CA_FILE"
+            printf '%s\n' "$BODY"
+            printf '    ProxyPreserveHost On\n'
+            printf '    RequestHeader set X-Forwarded-Proto "https"\n'
+            printf '    ProxyPass /hls/ http://packager:88/hls/\n'
+            printf '    ProxyPassReverse /hls/ http://packager:88/hls/\n'
+            printf '    ProxyPass /dash/ http://packager:88/dash/\n'
+            printf '    ProxyPassReverse /dash/ http://packager:88/dash/\n'
+            printf '</VirtualHost>\n'
+        fi
+    } > "$CONF_OUT"
+    echo "[kaltura] Apache config generated for $SERVICE_PROTOCOL://$WWW_HOST"
+}
+setup_apache
 
 # ── Directories & permissions ──────────────────────────────────────────────────
 mkdir -p \
@@ -78,18 +122,17 @@ generate_ini_from_template() {
         *.ini.template)  DEST="${TMPL%.ini.template}.ini" ;;
         *)               return 0 ;;
     esac
-    [ -f "$DEST" ] && return 0
     echo "[kaltura] Generating $(basename "$DEST")..."
     sed \
-        -e "s|@ENVIRONMENT_PROTOCOL@|http|g" \
-        -e "s|@PROTOCOL@|http|g" \
+        -e "s|@ENVIRONMENT_PROTOCOL@|$SERVICE_PROTOCOL|g" \
+        -e "s|@PROTOCOL@|$SERVICE_PROTOCOL|g" \
         -e "s|@SERVICE_URL@|$SERVICE_URL|g" \
         -e "s|@WWW_HOST@|$WWW_HOST|g" \
         -e "s|@CDN_HOST@|$WWW_HOST|g" \
         -e "s|@IIS_HOST@|$WWW_HOST|g" \
         -e "s|@KALTURA_FULL_VIRTUAL_HOST_NAME@|$WWW_HOST|g" \
         -e "s|@KALTURA_VIRTUAL_HOST_NAME@|$WWW_HOST|g" \
-        -e "s|@KALTURA_VIRTUAL_HOST_PORT@|80|g" \
+        -e "s|@KALTURA_VIRTUAL_HOST_PORT@|$SERVICE_PORT|g" \
         -e "s|@DB1_HOST@|$DB_HOST|g" \
         -e "s|@DB1_NAME@|$DB_NAME|g" \
         -e "s|@DB1_USER@|$DB_USER|g" \
@@ -139,7 +182,7 @@ generate_ini_from_template() {
         -e "s|@CURL_BIN_DIR@|/usr/bin|g" \
         -e "s|@INSTALLED_HOSTNAME@|$INSTALLED_HOSTNAME|g" \
         -e "s|@INSTALLED_HOSNAME@|$INSTALLED_HOSTNAME|g" \
-        -e "s|@TIME_ZONE@|UTC|g" \
+        -e "s|@TIME_ZONE@|$TIME_ZONE|g" \
         -e "s|@KALTURA_VERSION@|22.20.0|g" \
         -e "s|@KALTURA_VERSION_TYPE@|CE|g" \
         -e "s|@ENVIRONMENT_NAME@|docker|g" \
@@ -161,11 +204,11 @@ generate_ini_from_template() {
         -e "s|@EXCHANGE_NAME@|kaltura|g" \
         -e "s|@RTMP_URL@|rtmp://$WWW_HOST|g" \
         -e "s|@VOD_PACKAGER_HOST@|$WWW_HOST|g" \
-        -e "s|@VOD_PACKAGER_PORT@|88|g" \
-        -e "s|@VOD_PACKAGER_URL@|$WWW_HOST:88|g" \
+        -e "s|@VOD_PACKAGER_PORT@|$SERVICE_PORT|g" \
+        -e "s|@VOD_PACKAGER_URL@|$WWW_HOST|g" \
         -e "s|@LIVE_PACKAGER_HOST@|$WWW_HOST|g" \
-        -e "s|@LIVE_PACKAGER_PORT@|88|g" \
-        -e "s|@LIVE_PACKAGER_URL@|$WWW_HOST:88|g" \
+        -e "s|@LIVE_PACKAGER_PORT@|$SERVICE_PORT|g" \
+        -e "s|@LIVE_PACKAGER_URL@|$WWW_HOST|g" \
         -e "s|@LIVE_PACKAGER_TOKEN@||g" \
         -e "s|@STORAGE_BASE_DIR@|$WEB_DIR|g" \
         -e "s|@KMCNG_VERSION@|v7.20.0|g" \
@@ -362,8 +405,8 @@ SQL
             -e "s#@SERVICE_URL@#${SERVICE_URL}#g" \
             -e "s#@WEB_DIR@#${WEB_DIR}#g" \
             -e "s#@STORAGE_BASE_DIR@#${WEB_DIR}#g" \
-            -e "s#@VOD_PACKAGER_URL@#${WWW_HOST}:88#g" \
-            -e "s#@LIVE_PACKAGER_URL@#${WWW_HOST}:88#g" \
+            -e "s#@VOD_PACKAGER_URL@#${WWW_HOST}#g" \
+            -e "s#@LIVE_PACKAGER_URL@#${WWW_HOST}#g" \
             "$FILE"
     }
 
@@ -608,6 +651,11 @@ WHERE uc.partner_id > 0
   );
 SQL
 echo "[kaltura] V2 uiConf file_sync records ensured."
+
+# ── Fix delivery_profile URLs: remove stale :88 port (route through Apache) ───
+mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 kaltura <<SQL 2>/dev/null
+UPDATE delivery_profile SET url = REPLACE(url, ':88/', '/') WHERE url LIKE '%:88/%';
+SQL
 
 # ── Widgets: every positive partner needs a _<id> widget for widget sessions ───
 mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 kaltura <<SQL 2>/dev/null

@@ -1,0 +1,43 @@
+# =============================================================
+# Kaltura CE Docker Configuration
+# Copy this file to kaltura.conf and fill in your values.
+#   cp docker/kaltura.conf.example docker/kaltura.conf
+# kaltura.conf is git-ignored — never commit real credentials.
+#
+# Run the stack:
+#   docker compose --env-file ./kaltura.conf -f docker/docker-compose.yml up -d
+# =============================================================
+
+# ── Domain ────────────────────────────────────────────────────
+WWW_HOST=kaltura.example.com
+PROTOCOL=http
+
+# ── SSL (required when PROTOCOL=https) ────────────────────────
+# Paths inside the container. Put your cert files in docker/certs/
+# and they will be available at /opt/kaltura/certs/ inside the container.
+#   mkcert -cert-file docker/certs/server.crt \
+#           -key-file  docker/certs/server.key \
+#           kaltura.example.com
+SSL_CRT_FILE=/opt/kaltura/certs/server.crt
+SSL_KEY_FILE=/opt/kaltura/certs/server.key
+# SSL_CA_FILE=/opt/kaltura/certs/chain.crt
+
+# For local dev with mkcert (self-signed): copy the mkcert root CA here.
+# The container will automatically install it into its trust store.
+#   cp "$(mkcert -CAROOT)/rootCA.pem" docker/certs/rootCA.pem
+
+# ── Database ──────────────────────────────────────────────────
+# Use 'mysql' for Docker internal networking.
+DB1_HOST=mysql
+DB1_PORT=3306
+DB1_NAME=kaltura
+DB1_USER=kaltura
+DB1_PASS=changeme
+MYSQL_ROOT_PASSWORD=changeme_root
+
+# ── Admin Console ─────────────────────────────────────────────
+ADMIN_CONSOLE_ADMIN_MAIL=admin@example.com
+ADMIN_CONSOLE_PASSWORD=Admin1234!
+
+# ── Timezone ──────────────────────────────────────────────────
+TIME_ZONE=UTC

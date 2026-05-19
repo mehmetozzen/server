@@ -9,8 +9,17 @@ DB_PORT="${DB1_PORT:-3306}"
 DB_USER="${DB1_USER:-kaltura}"
 DB_PASS="${DB1_PASS:-kaltura123}"
 MYSQL_ROOT_PASS="${MYSQL_ROOT_PASSWORD:-kaltura_root}"
-SERVICE_URL="${SERVICE_URL:-http://test.mehmetozen.test}"
 TIME_ZONE="${TIME_ZONE:-UTC}"
+SERVICE_PROTOCOL="${PROTOCOL:-http}"
+WWW_HOST="${WWW_HOST:-kaltura.example.com}"
+SERVICE_URL="${SERVICE_URL:-${SERVICE_PROTOCOL}://${WWW_HOST}}"
+
+# ── Install local CA into container trust store (mkcert HTTPS support) ────────
+if [ -f /opt/kaltura/certs/rootCA.pem ]; then
+    cp /opt/kaltura/certs/rootCA.pem /usr/local/share/ca-certificates/mkcert-rootCA.crt
+    update-ca-certificates --fresh > /dev/null 2>&1
+    echo "[batch] Installed mkcert root CA into container trust store."
+fi
 
 # ── Directories ────────────────────────────────────────────────────────────────
 mkdir -p \
@@ -22,9 +31,6 @@ mkdir -p \
 
 # Remove stale PID file from previous run
 rm -f "$APP_DIR/var/run/batch.pid"
-
-WWW_HOST="${SERVICE_URL#http://}"
-WWW_HOST="${WWW_HOST#https://}"
 
 # ── Wait for MySQL ─────────────────────────────────────────────────────────────
 echo "[batch] Waiting for MySQL..."
