@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     unzip \
     imagemagick \
+    ffmpeg \
     libmemcached-dev \
     && rm -rf /var/lib/apt/lists/*
 
