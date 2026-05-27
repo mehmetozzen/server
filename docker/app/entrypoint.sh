@@ -655,6 +655,10 @@ if [ -f "$APPVERSIONS" ] && grep -qE '^studio_version\s*=\s*$' "$APPVERSIONS" 2>
     sed -i "s|^studio_version = *$|studio_version = ${STUDIO_VERSION:-v2.2.3}|" "$APPVERSIONS"
     echo "[kaltura] Set studio_version = ${STUDIO_VERSION:-v2.2.3} in appVersions.ini"
 fi
+if [ -f "$APPVERSIONS" ] && grep -qE '^studio_v3_version\s*=\s*$' "$APPVERSIONS" 2>/dev/null; then
+    sed -i "s|^studio_v3_version = *$|studio_v3_version = ${STUDIO_V3_VERSION:-v3.18.0}|" "$APPVERSIONS"
+    echo "[kaltura] Set studio_v3_version = ${STUDIO_V3_VERSION:-v3.18.0} in appVersions.ini"
+fi
 
 # ── Studio v2 spinner fixes ────────────────────────────────────────────────────
 # Two-pronged fix for the loading spinner that never disappears after the
