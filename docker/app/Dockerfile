@@ -29,6 +29,17 @@ RUN mkdir -p /opt/kaltura/apps/kmcng && \
     ln -s /opt/kaltura/apps/kmcng/${KMCNG_VERSION} /opt/kaltura/apps/kmcng/latest && \
     rm -rf /tmp/kmcng.zip /tmp/kmcng_extract
 
+ARG STUDIO_VERSION=v2.2.3
+ENV STUDIO_VERSION=${STUDIO_VERSION}
+RUN mkdir -p /opt/kaltura/apps/studio && \
+    curl -fsSL "https://github.com/kaltura/player-studio/releases/download/${STUDIO_VERSION}/studio_${STUDIO_VERSION}.zip" \
+        -o /tmp/studio.zip && \
+    unzip -q /tmp/studio.zip -d /tmp/studio_extract && \
+    INNER=$(find /tmp/studio_extract -maxdepth 2 -name "index.html" | head -1 | xargs dirname) && \
+    mv "$INNER" /opt/kaltura/apps/studio/${STUDIO_VERSION} && \
+    ln -s /opt/kaltura/apps/studio/${STUDIO_VERSION} /opt/kaltura/apps/studio/latest && \
+    rm -rf /tmp/studio.zip /tmp/studio_extract
+
 # thumbnail-embed.js is loaded by playerWrapper.html from an external CDN
 # (https://static.kaltura.com). Download it at build time and patch the reference
 # so the Share & Embed preview works in fully local environments.

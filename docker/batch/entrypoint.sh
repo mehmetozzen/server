@@ -115,6 +115,20 @@ chown -R www-data:www-data \
     "$APP_DIR/var/run" \
     2>/dev/null || true
 
+# ── PHP 8.1 fix: KAsyncMailer::reset() on null texts_array ───────────────────
+# PHP 8.1 reset() requires array; $this->texts_array is null until initConfig()
+# runs — getSubjectByType and getBodyByType both fall through to reset() when
+# the requested language is missing. Guard with is_array() before calling reset().
+# NOTE: $APP_DIR is bind-mounted from the host repo; the patch modifies that file.
+# It is idempotent (marker check) and must not be git-committed as a source change.
+ASYNC_MAILER="$APP_DIR/batch/batches/Mailer/KAsyncMailer.class.php"
+if [ -f "$ASYNC_MAILER" ] && ! grep -q 'is_array.*texts_array' "$ASYNC_MAILER" 2>/dev/null; then
+    sed -i 's|: reset(\$this->texts_array)|: (/* PHP81 */is_array($this->texts_array) ? reset($this->texts_array) : array())|g' \
+        "$ASYNC_MAILER" \
+        && echo "[batch] KAsyncMailer.class.php: patched reset() for PHP 8.1 null texts_array" \
+        || echo "[batch] WARN: KAsyncMailer.class.php reset() patch did not apply"
+fi
+
 # ── Start batch manager as www-data ───────────────────────────────────────────
 # Running as www-data ensures batch-created temp files are www-data-owned,
 # so the app container (also www-data) can rename/delete them without AGPL source changes.

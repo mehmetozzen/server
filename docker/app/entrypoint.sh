@@ -614,47 +614,18 @@ if [ -d "$HTML5LIB_WEB" ]; then
             echo "[kaltura] Patching EntryResult.php PHP 8.0 ternary compat ($(basename $VER_DIR))..."
             sed -i '462{s/isset/(isset/; s/null;\r\{0,1\}/null);/}' "$ENTRY_RESULT"
         fi
+
+        # PHP 8.1: json_decode() throws TypeError when passed a non-string (e.g. already-decoded
+        # stdClass). In PHP 7.x it silently returned null. Guard with is_string() check.
+        KALTURA_UTILS="$VER_DIR/modules/KalturaSupport/KalturaUtils.php"
+        if [ -f "$KALTURA_UTILS" ] \
+            && grep -q '@json_decode( \$str ) !== null' "$KALTURA_UTILS" 2>/dev/null \
+            && ! grep -q 'is_string(\$str) &&' "$KALTURA_UTILS" 2>/dev/null; then
+            echo "[kaltura] Patching KalturaUtils.php PHP 8.1 json_decode compat ($(basename $VER_DIR))..."
+            sed -i 's/else if( @json_decode( \$str ) !== null/else if( is_string($str) \&\& @json_decode( $str ) !== null/' "$KALTURA_UTILS"
+        fi
     done
 fi
-
-# ── V2 uiConf: fix html5_url {latest} and wire up file_sync records ───────────
-# insertDefaults.php creates partner uiconfs via raw SQL (bypasses Kaltura API),
-# so no conf file or file_sync record is created. We link each partner V2 uiconf
-# to the system uiconf's (partner_id=0) existing file_sync record — same physical
-# file, no copy needed, batch workers won't delete READY records.
-# html5_url with {latest} also needs resolving: embedIframeAction handles it but
-# mwEmbedFrame reads html5_url directly from uiconf.get inside the iframe.
-mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 kaltura <<SQL 2>/dev/null
-UPDATE ui_conf
-SET html5_url   = REPLACE(html5_url, '{latest}', 'v2.7.4'),
-    custom_data = 'a:1:{s:17:"conf_file_version";d:2;}'
-WHERE partner_id > 0
-  AND html5_url LIKE '%{latest}%'
-  AND tags NOT LIKE '%kalturaPlayerJs%';
-
-INSERT INTO file_sync
-    (partner_id, object_type, object_id, object_sub_type, version, original, status, dc,
-     file_root, file_path, file_size, created_at, updated_at, ready_at)
-SELECT
-    uc.partner_id, 2, CAST(uc.id AS CHAR), 1,
-    fs.version, 1, fs.status, fs.dc,
-    fs.file_root, fs.file_path, fs.file_size,
-    NOW(), NOW(), NOW()
-FROM ui_conf uc
-CROSS JOIN (
-    SELECT * FROM file_sync
-    WHERE object_type=2 AND object_sub_type=1 AND status=2
-      AND partner_id=0 AND file_size > 1000
-    ORDER BY id LIMIT 1
-) fs
-WHERE uc.partner_id > 0
-  AND uc.tags NOT LIKE '%kalturaPlayerJs%'
-  AND CAST(uc.id AS CHAR) NOT IN (
-      SELECT object_id FROM file_sync
-      WHERE object_type=2 AND object_sub_type=1 AND status=2
-  );
-SQL
-echo "[kaltura] V2 uiConf file_sync records ensured."
 
 # ── Fix delivery_profile URLs: remove stale :88 port (route through Apache) ───
 mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 kaltura <<SQL 2>/dev/null
@@ -676,6 +647,85 @@ APPVERSIONS="$APP_DIR/configurations/appVersions.ini"
 if [ -f "$APPVERSIONS" ] && grep -qE '^html5_version\s*=\s*$' "$APPVERSIONS" 2>/dev/null; then
     sed -i "s|^html5_version = *$|html5_version = v2.7.4|" "$APPVERSIONS"
     echo "[kaltura] Set html5_version = v2.7.4 in appVersions.ini"
+fi
+if [ -f "$APPVERSIONS" ] && grep -qE '^studio_version\s*=\s*$' "$APPVERSIONS" 2>/dev/null; then
+    sed -i "s|^studio_version = *$|studio_version = ${STUDIO_VERSION:-v2.2.3}|" "$APPVERSIONS"
+    echo "[kaltura] Set studio_version = ${STUDIO_VERSION:-v2.2.3} in appVersions.ini"
+fi
+
+# ── Studio v2 spinner fixes ────────────────────────────────────────────────────
+# Two-pronged fix for the loading spinner that never disappears after the
+# players list is shown:
+#
+# Fix A (index.html watchdog): intercepts KMCModule's run() phase to wrap
+#   requestStarted with a 6-second watchdog timer. If the spinner is still
+#   blocking after 6s (customStart still set), the timer force-broadcasts
+#   _END_REQUEST_ to hide it. Safe: fires only when something went wrong.
+#
+# Fix B (main.min.js, simple sed): wraps cachePlayers() in a try/finally so
+#   requestEnded('list') always fires even if cachePlayers() throws.
+STUDIO_DIR="/opt/kaltura/apps/studio/v2.2.3"
+STUDIO_INDEX="$STUDIO_DIR/index.html"
+STUDIO_MIN="$STUDIO_DIR/main.min.js"
+STUDIO_INI="$STUDIO_DIR/studio.ini"
+
+# Fix A: append spinner watchdog run-block to main.min.js
+# angular.module('KMCModule') (no deps array) retrieves the existing module
+# and adds a run() block. The block wraps requestStarted with a 6-second
+# watchdog: if customStart is still set after 6s, forcibly broadcasts
+# _END_REQUEST_ to hide the stuck spinner. Idempotent via marker comment.
+WATCHDOG_MARKER='/* spinner-watchdog-v1 */'
+# Fix B: wrap cachePlayers() in IIFE try/finally so requestEnded('list') always fires
+# even if cachePlayers() throws (e.g. conf_file wrong format). Must use an IIFE
+# because the original is a comma-operator expression — 'try' as a bare statement
+# causes SyntaxError in that context.
+if [ -f "$STUDIO_MIN" ] && grep -q 'f\.cachePlayers(e\.objects),p\.requestEnded("list")' "$STUDIO_MIN" 2>/dev/null; then
+    sed -i 's|f\.cachePlayers(e\.objects),p\.requestEnded("list")|(function(){try{f.cachePlayers(e.objects)}finally{p.requestEnded("list")}})()|g' "$STUDIO_MIN" \
+        && echo "[kaltura] Studio main.min.js: patched cachePlayers with IIFE try/finally"
+fi
+
+if [ -f "$STUDIO_MIN" ] && ! grep -q 'spinner-watchdog-v1' "$STUDIO_MIN" 2>/dev/null; then
+    cat >> "$STUDIO_MIN" <<'JSEOF'
+/* spinner-watchdog-v1 */
+angular.module('KMCModule').run(['requestNotificationChannel','$rootScope',function(ch,$root){var _t,_o=ch.requestStarted.bind(ch);ch.requestStarted=function(c){_o(c);clearTimeout(_t);_t=setTimeout(function(){if(ch.customStart){ch.customStart=null;$root.$broadcast('_END_REQUEST_');}},6000);};}]);
+JSEOF
+    echo "[kaltura] Studio main.min.js: appended spinner watchdog run block"
+fi
+
+
+# Fix C: update studio.ini — point html5lib to local server and align html5_version with it
+# html5_version mismatch (v2.86.1 vs our v2.7.4) causes Studio to request non-existent resources.
+if [ -f "$STUDIO_INI" ]; then
+    sed -i \
+        -e "s|http://kgit\.html5video\.org/tags/v2\.86\.1/mwEmbedLoader\.php|${SERVICE_PROTOCOL}://${WWW_HOST}/html5/html5lib/v2.7.4/mwEmbedLoader.php|g" \
+        -e "s|\"html5_version\":\"v2\.86\.1\"|\"html5_version\":\"v2.7.4\"|g" \
+        "$STUDIO_INI" \
+        && echo "[kaltura] Studio studio.ini: set html5lib to local URL and html5_version=v2.7.4"
+fi
+
+# ── PHP 8.1 fix: KalturaUtils::formatString non-scalar input ──────────────────
+# UiConfResult::normalizeFlashVars passes nested stdClass objects to formatString.
+# PHP 8.1 makes json_decode() strict about its type, throwing TypeError when
+# called with a non-string even inside @json_decode. Guard non-scalar inputs.
+# This fixes the "Fatal error: json_decode(): Argument #1 ($json) must be of
+# type string, stdClass given" crash in services.php?service=uiConfJs.
+KALTURA_UTILS_FILE="$WEB_DIR/html5/html5lib/v2.7.4/modules/KalturaSupport/KalturaUtils.php"
+if [ -f "$KALTURA_UTILS_FILE" ] && ! grep -q 'is_scalar.*PHP81' "$KALTURA_UTILS_FILE" 2>/dev/null; then
+    sed -i 's|public function formatString( \$str ) {|public function formatString( $str ) { /* PHP81 */ if(!is_scalar($str)\&\&!is_null($str)){return $str;}|' \
+        "$KALTURA_UTILS_FILE" \
+        && echo "[kaltura] KalturaUtils.php: patched formatString for PHP 8.1 non-scalar input" \
+        || echo "[kaltura] WARN: KalturaUtils.php formatString patch did not apply"
+fi
+
+# ── PHP 8.1 fix: KalturaCommon memcache flags key missing ────────────────────
+# cache.ini [memcacheLocal] has no 'flags' key; PHP 8.1 promotes undefined array
+# key access to E_WARNING. Default flags to 0 (no compression) when absent.
+KALTURA_COMMON="$WEB_DIR/html5/html5lib/v2.7.4/modules/KalturaSupport/KalturaCommon.php"
+if [ -f "$KALTURA_COMMON" ] && ! grep -q 'PHP81' "$KALTURA_COMMON" 2>/dev/null; then
+    sed -i "s|\\\$wgMemcacheConfiguration\['flags'\]|(/* PHP81 */isset(\$wgMemcacheConfiguration['flags']) ? \$wgMemcacheConfiguration['flags'] : 0)|g" \
+        "$KALTURA_COMMON" \
+        && echo "[kaltura] KalturaCommon.php: patched memcache flags for PHP 8.1" \
+        || echo "[kaltura] WARN: KalturaCommon.php flags patch did not apply"
 fi
 
 echo "[kaltura] Starting Apache..."
