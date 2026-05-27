@@ -477,6 +477,8 @@ SQL
     php insertContent.php >> "$LOG_DIR/insertContent.log" 2>&1 \
         || echo "[kaltura] WARN: insertContent.php had non-fatal errors (check $LOG_DIR/insertContent.log)"
 
+    # html5studio confFile fix runs in the always-on section below (handles new partners too).
+
     # ── Deploy UI confs via official deploy_v2.php for KMC / KMCng / studio ────
     # The official installer's kaltura-db-config.sh runs deploy_v2.php for each
     # UI app's config.ini to seed dozens of ui_conf rows that KMC's Studio,
@@ -627,6 +629,7 @@ if [ -d "$HTML5LIB_WEB" ]; then
     done
 fi
 
+
 # ── Fix delivery_profile URLs: remove stale :88 port (route through Apache) ───
 mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 kaltura <<SQL 2>/dev/null
 UPDATE delivery_profile SET url = REPLACE(url, ':88/', '/') WHERE url LIKE '%:88/%';
@@ -729,4 +732,67 @@ if [ -f "$KALTURA_COMMON" ] && ! grep -q 'PHP81' "$KALTURA_COMMON" 2>/dev/null; 
 fi
 
 echo "[kaltura] Starting Apache..."
-exec apache2-foreground
+apache2-foreground &
+APACHE_PID=$!
+trap 'kill -TERM "$APACHE_PID" 2>/dev/null; wait "$APACHE_PID"' TERM INT HUP
+
+# Fix html5studio confFiles via API once Apache is fully up.
+# saveConfFileToDisk() silently fails during the temp init Apache phase
+# (missing PHP/Kaltura context). Running after full startup it works correctly.
+# Queries DB first — only calls update() for uiConfs with no file_sync record.
+_HTML5_TMPL="$APP_DIR/deployment/base/scripts/init_content/ui_conf/html5Player.json"
+if [ -f "$APP_DIR/tests/lib/KalturaClient.php" ] && [ -f "$_HTML5_TMPL" ]; then
+    echo "[kaltura] Waiting for Kaltura API to be ready..."
+    _TRIES=0
+    until curl -sf "http://localhost/api_v3/?service=system&action=ping" > /dev/null 2>&1; do
+        sleep 3
+        _TRIES=$(( _TRIES + 1 ))
+        if [ "$_TRIES" -gt 20 ]; then
+            echo "[kaltura] WARN: API not ready after 60s, skipping confFile fix"
+            break
+        fi
+    done
+    if [ "$_TRIES" -le 20 ]; then
+        cat > /tmp/fix_uiconf.php <<PHP
+<?php
+require_once '$APP_DIR/tests/lib/KalturaClient.php';
+\$json = file_get_contents('$_HTML5_TMPL');
+\$pdo = new PDO('mysql:host=$DB_HOST;dbname=$DB_NAME', '$DB_USER', '$DB_PASS');
+\$partners = \$pdo->query('SELECT id, admin_secret FROM partner WHERE id > 0 ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+foreach (\$partners as \$p) {
+    \$stmt = \$pdo->prepare(
+        "SELECT u.id FROM ui_conf u
+         WHERE u.tags LIKE '%html5studio%'
+           AND u.tags NOT LIKE '%kalturaPlayerJs%'
+           AND u.partner_id = ?
+           AND NOT EXISTS (SELECT 1 FROM file_sync WHERE object_id=u.id AND object_type=2 AND object_sub_type=1)"
+    );
+    \$stmt->execute([\$p['id']]);
+    \$broken = \$stmt->fetchAll(PDO::FETCH_COLUMN);
+    if (!\$broken) continue;
+    try {
+        \$cfg = new KalturaConfiguration(\$p['id']);
+        \$cfg->serviceUrl = '$SERVICE_URL';
+        \$cfg->curlOptVerifyPeer = false;
+        \$client = new KalturaClient(\$cfg);
+        \$ks = \$client->session->start(\$p['admin_secret'], '', KalturaSessionType::ADMIN, \$p['id']);
+        \$client->setKs(\$ks);
+        foreach (\$broken as \$uc_id) {
+            \$upd = new KalturaUiConf();
+            \$upd->config = \$json;
+            \$client->uiConf->update(\$uc_id, \$upd);
+            echo "[kaltura] confFile fixed for uiConf \$uc_id (partner {\$p['id']})\n";
+        }
+    } catch (Exception \$e) {
+        echo "[kaltura] ERROR partner {\$p['id']}: " . \$e->getMessage() . "\n";
+    }
+}
+PHP
+        php /tmp/fix_uiconf.php >> "$LOG_DIR/uiconf_fix.log" 2>&1 \
+            && echo "[kaltura] html5studio confFiles fixed via API" \
+            || echo "[kaltura] WARN: confFile fix had errors (check $LOG_DIR/uiconf_fix.log)"
+        rm -f /tmp/fix_uiconf.php
+    fi
+fi
+
+wait "$APACHE_PID"

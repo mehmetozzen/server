@@ -202,7 +202,7 @@ class KAsyncMailer extends KJobHandlerWorker
 	{
 		if ( $type > 0 && is_null($dynamicSubject))
 		{
-			$languageTexts = isset($this->texts_array[$language]) ? $this->texts_array[$language] : reset($this->texts_array);
+			$languageTexts = isset($this->texts_array[$language]) ? $this->texts_array[$language] : (/* PHP81 */is_array($this->texts_array) ? reset($this->texts_array) : array());
 			$defaultLanguageTexts = $this->texts_array[self::DEFAULT_LANGUAGE];
 			$defaultSubject = isset ($defaultLanguageTexts['subjects'][$type]) ? $defaultLanguageTexts['subjects'][$type] : '';
 			$subject = isset ($languageTexts['subjects'][$type]) ? $languageTexts['subjects'][$type] : $defaultSubject;
@@ -224,7 +224,7 @@ class KAsyncMailer extends KJobHandlerWorker
 	{
 		// if this does not need the common_header, under common_text should have $type_header =
 		// same with footer
-		$languageTexts = isset($this->texts_array[$language]) ? $this->texts_array[$language] : reset($this->texts_array);
+		$languageTexts = isset($this->texts_array[$language]) ? $this->texts_array[$language] : (/* PHP81 */is_array($this->texts_array) ? reset($this->texts_array) : array());
 		$defaultLanguageTexts = $this->texts_array[self::DEFAULT_LANGUAGE];
 		$common_text_arr = $languageTexts['common_text'];
 		$defaultCommonTexts = $defaultLanguageTexts['common_text'];
