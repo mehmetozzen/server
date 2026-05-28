@@ -83,6 +83,13 @@ chown -R www-data:www-data "$WEB_DIR" "$LOG_DIR" "$TMP_DIR" "$APP_DIR/cache" 2>/
 # ── Link /opt/kaltura/apps (KMC NG, studio, etc.) into BASE_DIR ───────────────
 [ ! -e "$APP_DIR/apps" ] && ln -sf /opt/kaltura/apps "$APP_DIR/apps"
 
+# ── api_v3 symlink: Apache routes /api_v3/ → alpha/web/api_v3/ ────────────────
+# Without this symlink insertContent.php (admin user creation) and all API
+# calls return 404, causing "Invalid credentials" on the admin console.
+mkdir -p "$APP_DIR/alpha/web"
+[ ! -e "$APP_DIR/alpha/web/api_v3" ] && \
+    ln -sf "$APP_DIR/api_v3/web" "$APP_DIR/alpha/web/api_v3"
+
 # ── Hostname resolution for API self-calls ─────────────────────────────────────
 grep -q "$WWW_HOST" /etc/hosts || echo "127.0.0.1 $WWW_HOST" >> /etc/hosts
 
