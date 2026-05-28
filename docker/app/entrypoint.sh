@@ -748,7 +748,7 @@ _HTML5_TMPL="$APP_DIR/deployment/base/scripts/init_content/ui_conf/html5Player.j
 if [ -f "$APP_DIR/tests/lib/KalturaClient.php" ] && [ -f "$_HTML5_TMPL" ]; then
     echo "[kaltura] Waiting for Kaltura API to be ready..."
     _TRIES=0
-    until curl -sf "http://localhost/api_v3/?service=system&action=ping" > /dev/null 2>&1; do
+    until curl -sf --insecure "${SERVICE_URL}/api_v3/?service=system&action=ping" > /dev/null 2>&1; do
         sleep 3
         _TRIES=$(( _TRIES + 1 ))
         if [ "$_TRIES" -gt 20 ]; then

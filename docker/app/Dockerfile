@@ -96,18 +96,20 @@ RUN pecl install memcache && docker-php-ext-enable memcache
 # Kaltura repo (clients-generator). The server's generator/generate.php loads
 # clients-generator/exec.php via ../../clients-generator relative path, so the
 # repo must sit at /opt/kaltura/clients-generator.
+ARG CLIENTS_GENERATOR_VERSION=Venus-22.20.0-rel
 RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && git clone --depth 1 https://github.com/kaltura/clients-generator.git /opt/kaltura/clients-generator \
+    && git clone --depth 1 --branch "${CLIENTS_GENERATOR_VERSION}" \
+        https://github.com/kaltura/clients-generator.git /opt/kaltura/clients-generator \
     && apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 # html5lib (mwEmbed V2 player) — stored OUTSIDE the kaltura_web volume so the
 # named volume cannot shadow it. entrypoint.sh copies it in on first run.
 ARG HTML5LIB_VERSION=v2.7.4
-RUN curl -fsSL "https://github.com/kaltura/mwEmbed/archive/refs/heads/master.tar.gz" \
+RUN curl -fsSL "https://github.com/kaltura/mwEmbed/archive/refs/tags/${HTML5LIB_VERSION}.tar.gz" \
         -o /tmp/mwembed.tar.gz \
     && mkdir -p /opt/kaltura/html5lib_image \
     && tar -xzf /tmp/mwembed.tar.gz -C /tmp \
-    && mv /tmp/mwEmbed-master /opt/kaltura/html5lib_image/${HTML5LIB_VERSION} \
+    && mv /tmp/mwEmbed-${HTML5LIB_VERSION} /opt/kaltura/html5lib_image/${HTML5LIB_VERSION} \
     && rm -f /tmp/mwembed.tar.gz
 
 RUN a2enmod rewrite expires headers deflate filter proxy proxy_http
