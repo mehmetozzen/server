@@ -105,11 +105,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
 # html5lib (mwEmbed V2 player) — stored OUTSIDE the kaltura_web volume so the
 # named volume cannot shadow it. entrypoint.sh copies it in on first run.
 ARG HTML5LIB_VERSION=v2.7.4
-RUN curl -fsSL "https://github.com/kaltura/mwEmbed/archive/refs/tags/${HTML5LIB_VERSION}.tar.gz" \
+RUN curl -fsSL "https://github.com/kaltura/mwEmbed/archive/refs/heads/master.tar.gz" \
         -o /tmp/mwembed.tar.gz \
     && mkdir -p /opt/kaltura/html5lib_image \
     && tar -xzf /tmp/mwembed.tar.gz -C /tmp \
-    && mv /tmp/mwEmbed-${HTML5LIB_VERSION} /opt/kaltura/html5lib_image/${HTML5LIB_VERSION} \
+    && mv /tmp/mwEmbed-master /opt/kaltura/html5lib_image/${HTML5LIB_VERSION} \
     && rm -f /tmp/mwembed.tar.gz
 
 RUN a2enmod rewrite expires headers deflate filter proxy proxy_http
