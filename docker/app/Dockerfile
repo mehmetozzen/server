@@ -88,6 +88,7 @@ RUN LDAP_LIBDIR=$(find /usr/lib -name "libldap.so" | head -1 | xargs dirname | s
     && docker-php-ext-configure ldap --with-libdir="$LDAP_LIBDIR" \
     && docker-php-ext-install \
         pdo_mysql \
+        mysqli \
         mbstring \
         gd \
         xml \
@@ -111,6 +112,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
     && git clone --depth 1 --branch "${CLIENTS_GENERATOR_VERSION}" \
         https://github.com/kaltura/clients-generator.git /opt/kaltura/clients-generator \
     && apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
+# kaltura/dwh DDL — stored in image so entrypoint.sh can load schema on first run.
+# Orion-15.1.0 is the last released DWH branch; no Venus-tagged release exists.
+ARG DWH_VERSION=Orion-15.1.0
+RUN curl -fsSL "https://github.com/kaltura/dwh/archive/refs/heads/${DWH_VERSION}.tar.gz" \
+        -o /tmp/dwh.tar.gz \
+    && mkdir -p /opt/kaltura/dwh_ddl \
+    && tar -xzf /tmp/dwh.tar.gz -C /tmp \
+    && mv /tmp/dwh-${DWH_VERSION}/ddl /opt/kaltura/dwh_ddl/ddl \
+    && mv /tmp/dwh-${DWH_VERSION}/setup /opt/kaltura/dwh_ddl/setup \
+    && rm -rf /tmp/dwh.tar.gz /tmp/dwh-${DWH_VERSION}
 
 # html5lib (mwEmbed V2 player) — stored OUTSIDE the kaltura_web volume so the
 # named volume cannot shadow it. entrypoint.sh copies it in on first run.

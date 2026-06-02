@@ -223,8 +223,8 @@ generate_ini_from_template() {
         -e "s|@LIVE_PACKAGER_TOKEN@||g" \
         -e "s|@STORAGE_BASE_DIR@|$WEB_DIR|g" \
         -e "s|@KMCNG_VERSION@|v7.20.0|g" \
-        -e "s|@DRUID_BROKER_URL@|http://localhost:8082/druid/v2/|g" \
-        -e "s|@DRUID_EXTERNAL_CALLS_BROKER_URL@|http://localhost:8082/druid/v2/|g" \
+        -e "s|@DRUID_BROKER_URL@|http://druid-broker:8082|g" \
+        -e "s|@DRUID_EXTERNAL_CALLS_BROKER_URL@|http://druid-broker:8082|g" \
         -e "s|@MEMACHED_HOSTNAME@|memcache|g" \
         -e "s|@MEMACHED_PORT@|11211|g" \
         -e "s|@MEMCACHED_HOSTNAME@|memcache|g" \
@@ -650,6 +650,117 @@ FROM partner
 WHERE id > 0
   AND CONCAT('_', id) NOT IN (SELECT id FROM widget);
 SQL
+
+# ── KAVA/Druid enabled: druid_url points at the druid broker (set via template) ──
+# shouldUseKava() requires druid_url set → numeric report types with KAVA defs
+# (e.g. reportType 34 USER_ENGAGEMENT_TIMELINE) route to Druid native /druid/v2/.
+# Legacy report types without a KAVA def still fall back to the DWH below.
+# Ensure druid_url is NOT commented out (clean up any stale comment from prior runs).
+LOCAL_INI="$APP_DIR/configurations/local.ini"
+if [ -f "$LOCAL_INI" ]; then
+    sed -i 's|^;\(druid_url\s*=.*\)|\1|' "$LOCAL_INI"
+    sed -i 's|^;\(external_calls_druid_url\s*=.*\)|\1|' "$LOCAL_INI"
+fi
+
+# ── Load DWH schema into kalturadw (idempotent: skips if tables already exist) ──
+# Mirrors what kaltura-dwh-config.sh does on bare metal:
+# 1. Patch old partition boundary dates (2013-2015) → current dates to avoid MySQL errors
+# 2. Run DDL files in correct order across the four DWH databases
+# 3. Populate time dimension and seed data
+set +e
+DWH_DDL="/opt/kaltura/dwh_ddl"
+DWH_TABLE_COUNT=$(mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 \
+    -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='kalturadw'" 2>/dev/null)
+if [ "${DWH_TABLE_COUNT:-0}" -eq 0 ] && [ -d "$DWH_DDL/ddl" ]; then
+    echo "[kaltura] Applying DWH partition date fixup..."
+    # Bare metal installer replaces these hardcoded 2013-2015 partition boundary dates
+    # with current dates. Without this, MySQL fails creating partitioned tables.
+    LDAYLM=$(date -d "$(date +%Y-%m-01) -1 day" +%Y%m%d 2>/dev/null || date -v-1m -v+1d +%Y%m%d 2>/dev/null || echo $(date +%Y%m%d))
+    FDAYCM=$(date +%Y%m01)
+    LASTMO=$(date +%Y%m)
+    FDAYNM=$(date -d "$(date +%Y-%m-01) +1 month" +%Y%m%d 2>/dev/null || date -v+1m -v1d +%Y%m%d 2>/dev/null || echo $(date +%Y%m%d))
+    NEXMO=$(date -d "$(date +%Y-%m-01) +1 month" +%Y%m 2>/dev/null || date -v+1m +%Y%m 2>/dev/null || echo $(date +%Y%m))
+    # Replace old 2013-2015 dates in all DDL files
+    find "$DWH_DDL/ddl" -name "*.sql" -exec sed -i \
+        -e "s/20130831/$LDAYLM/g" \
+        -e "s/201308/$LASTMO/g" \
+        -e "s/20130901/$FDAYCM/g" \
+        -e "s/20131001/$FDAYNM/g" \
+        -e "s/201309/$LASTMO/g" \
+        -e "s/20131231/$LDAYLM/g" \
+        -e "s/201312/$LASTMO/g" \
+        -e "s/20140101/$FDAYCM/g" \
+        -e "s/201401/$NEXMO/g" \
+        -e "s/20150801/$LDAYLM/g" \
+        -e "s/201508/$LASTMO/g" \
+        -e "s/20150901/$FDAYCM/g" \
+        -e "s/201509/$NEXMO/g" \
+        -e "s/20151001/$FDAYNM/g" \
+        -e "s/201510/$NEXMO/g" \
+        -e "s/20151101/$FDAYNM/g" \
+        {} \;
+    # MySQL 5.7: PRIMARY KEY columns cannot be DEFAULT NULL (ERROR 1171)
+    # DWH DDL was written for MySQL 5.5 which allowed this silently.
+    # Fix: change DEFAULT NULL → NOT NULL DEFAULT 0/'' for aggr and facts tables.
+    find "$DWH_DDL/ddl/dw/aggr" "$DWH_DDL/ddl/dw/facts" "$DWH_DDL/ddl/dw/dimensions" \
+        -name "*.sql" -exec sed -i \
+        -e 's/\bINT\b DEFAULT NULL/INT NOT NULL DEFAULT 0/g' \
+        -e 's/INT(11) DEFAULT NULL/INT(11) NOT NULL DEFAULT 0/g' \
+        -e 's/INT(6) DEFAULT NULL/INT(6) NOT NULL DEFAULT 0/g' \
+        -e 's/VARCHAR(20) DEFAULT NULL/VARCHAR(20) NOT NULL DEFAULT '"'"''"'"'/g' \
+        -e 's/VARCHAR(50) DEFAULT NULL/VARCHAR(50) NOT NULL DEFAULT '"'"''"'"'/g' \
+        {} \;
+    echo "[kaltura] Loading DWH schema into kalturadw..."
+    _mysql_run() {
+        local db="$1"; local f="$2"
+        [ -f "$f" ] || return 0
+        mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" \
+            --ssl=0 --force "$db" < "$f" 2>/dev/null; return 0
+    }
+    _mysql_batch() {
+        # Batch all plain files (no DELIMITER) in one connection; run DELIMITER files individually
+        local db="$1"; shift
+        local plain="" delim_files=""
+        for f in "$@"; do
+            [ -f "$f" ] || continue
+            if grep -q "DELIMITER" "$f" 2>/dev/null; then
+                delim_files="$delim_files $f"
+            else
+                plain="$plain $f"
+            fi
+        done
+        # shellcheck disable=SC2086
+        [ -n "$plain" ] && cat $plain 2>/dev/null | mysql -h"$DB_HOST" -P"$DB_PORT" \
+            -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 --force "$db" 2>/dev/null; true
+        for f in $delim_files; do _mysql_run "$db" "$f"; done
+    }
+    _mysql_batch kalturadw_bisources "$DWH_DDL/ddl/bi_sources/"*.sql
+    _mysql_batch kalturadw_ds        "$DWH_DDL/ddl/ds/"*.sql
+    _mysql_batch kalturalog          "$DWH_DDL/ddl/log/"*.sql
+    _mysql_batch kalturadw \
+        "$DWH_DDL/ddl/dw/"*.sql \
+        "$DWH_DDL/ddl/dw/facts/"*.sql \
+        "$DWH_DDL/ddl/dw/dimensions/"*.sql \
+        "$DWH_DDL/ddl/dw/maintenance/"*.sql \
+        "$DWH_DDL/ddl/dw/aggr/"*.sql \
+        "$DWH_DDL/ddl/dw/functions/"*.sql \
+        "$DWH_DDL/ddl/dw/ri/"*.sql \
+        "$DWH_DDL/ddl/dw/views/"*.sql \
+        "$DWH_DDL/ddl/dw/fms/"*.sql \
+        "$DWH_DDL/ddl/setup/populate_time_dim.sql" \
+        "$DWH_DDL/ddl/setup/populate_dwh_dim_ip_ranges.sql"
+    mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 2>/dev/null <<SQL
+CREATE USER IF NOT EXISTS 'etl'@'%' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON kalturadw.*           TO 'etl'@'%';
+GRANT ALL PRIVILEGES ON kalturadw_ds.*        TO 'etl'@'%';
+GRANT ALL PRIVILEGES ON kalturadw_bisources.* TO 'etl'@'%';
+GRANT SELECT, INSERT, UPDATE ON kalturalog.*  TO 'etl'@'%';
+GRANT SELECT ON ${DB_NAME}.*                  TO 'etl'@'%';
+FLUSH PRIVILEGES;
+SQL
+    echo "[kaltura] DWH schema loaded."
+fi
+set -e
 
 # ── appVersions.ini: set html5_version so embedIframeJs can serve kWidget JS ──
 # embedIframeJsAction reads html5_version; if empty it exits with "version not found"

@@ -104,6 +104,110 @@ services:
       retries: 5
       start_period: 30s
 
+  # ── Apache Druid (split-service) — KAVA analytics backend ────────────────────
+  # Kaltura's kKavaReportsMgr POSTs native queries to the broker at /druid/v2/.
+  # Each service runs via /druid.sh <role> (sh-based; the single-container
+  # nano-quickstart path needs perl/supervise which the slim image lacks).
+  druid-postgres:
+    image: postgres:15-alpine
+    platform: linux/amd64
+    container_name: kaltura_druid_postgres
+    environment:
+      POSTGRES_USER: druid
+      POSTGRES_PASSWORD: druid
+      POSTGRES_DB: druid
+    volumes:
+      - druid_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U druid"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  druid-zookeeper:
+    image: zookeeper:3.8
+    platform: linux/amd64
+    container_name: kaltura_druid_zookeeper
+    environment:
+      ZOO_MY_ID: 1
+
+  druid-coordinator:
+    image: apache/druid:30.0.1
+    platform: linux/amd64
+    container_name: kaltura_druid_coordinator
+    depends_on:
+      druid-postgres:
+        condition: service_healthy
+      druid-zookeeper:
+        condition: service_started
+    env_file: ./druid/environment
+    command: ["coordinator"]
+    volumes:
+      - druid_shared:/opt/shared
+      - druid_coordinator_var:/opt/druid/var
+    ports:
+      - "8081:8081"   # coordinator + overlord (task submission)
+
+  druid-broker:
+    image: apache/druid:30.0.1
+    platform: linux/amd64
+    container_name: kaltura_druid_broker
+    depends_on:
+      druid-coordinator:
+        condition: service_started
+    env_file: ./druid/environment
+    command: ["broker"]
+    volumes:
+      - druid_broker_var:/opt/druid/var
+    ports:
+      - "8082:8082"   # native /druid/v2/ queries — druid_url target
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082/status/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+
+  druid-historical:
+    image: apache/druid:30.0.1
+    platform: linux/amd64
+    container_name: kaltura_druid_historical
+    depends_on:
+      druid-coordinator:
+        condition: service_started
+    env_file: ./druid/environment
+    command: ["historical"]
+    volumes:
+      - druid_shared:/opt/shared
+      - druid_historical_var:/opt/druid/var
+
+  druid-middlemanager:
+    image: apache/druid:30.0.1
+    platform: linux/amd64
+    container_name: kaltura_druid_middlemanager
+    depends_on:
+      druid-coordinator:
+        condition: service_started
+    env_file: ./druid/environment
+    command: ["middleManager"]
+    volumes:
+      - druid_shared:/opt/shared
+      - druid_middle_var:/opt/druid/var
+
+  druid-router:
+    image: apache/druid:30.0.1
+    platform: linux/amd64
+    container_name: kaltura_druid_router
+    depends_on:
+      druid-coordinator:
+        condition: service_started
+    env_file: ./druid/environment
+    command: ["router"]
+    volumes:
+      - druid_router_var:/opt/druid/var
+    ports:
+      - "8888:8888"   # web console
+
   batch:
     build:
       context: ..
@@ -135,3 +239,10 @@ volumes:
   kaltura_log:
   kaltura_tmp:
   sphinx_data:
+  druid_shared:
+  druid_pgdata:
+  druid_coordinator_var:
+  druid_broker_var:
+  druid_historical_var:
+  druid_middle_var:
+  druid_router_var:
