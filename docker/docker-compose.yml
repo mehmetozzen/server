@@ -208,6 +208,25 @@ services:
     ports:
       - "8888:8888"   # web console
 
+  # ── Analytics event receiver — ingests player KAVA beacons into Druid ────────
+  # Apache proxies /api_v3/index.php?service=analytics&action=trackEvent here.
+  # Translates numeric KAVA eventType -> kKavaBase strings and batch-appends to
+  # the player-events-historical Druid datasource. Replaces the SaaS Kanalony.
+  analytics-receiver:
+    build:
+      context: ..
+      dockerfile: docker/analytics-receiver/Dockerfile
+    container_name: kaltura_analytics_receiver
+    environment:
+      DRUID_OVERLORD: http://druid-coordinator:8081
+      FLUSH_INTERVAL_MS: "15000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9999/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   batch:
     build:
       context: ..
