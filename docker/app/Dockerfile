@@ -67,11 +67,21 @@ RUN curl -sL "https://static.kaltura.com/content/static/player-scripts/thumbnail
 RUN for dir in \
         /opt/kaltura/apps/liveanalytics/v2.7.3 \
         /opt/kaltura/apps/liveDashboard/v1.5.7 \
-        /opt/kaltura/apps/usage-dashboard/v2.0.1 \
-        /opt/kaltura/apps/kmc-analytics/v3.4.2; do \
+        /opt/kaltura/apps/usage-dashboard/v2.0.1; do \
     mkdir -p "$dir" && \
     printf '<!DOCTYPE html><html><body></body></html>\n' > "$dir/index.html"; \
     done
+
+ARG ANALYTICS_VERSION=v3.4.2
+ENV ANALYTICS_VERSION=${ANALYTICS_VERSION}
+RUN mkdir -p /opt/kaltura/apps/kmc-analytics && \
+    curl -fsSL "https://github.com/kaltura/analytics-front-end/releases/download/${ANALYTICS_VERSION}/kmcAnalytics_${ANALYTICS_VERSION}.zip" \
+        -o /tmp/analytics.zip && \
+    unzip -q /tmp/analytics.zip -d /tmp/analytics_extract && \
+    INNER=$(find /tmp/analytics_extract -maxdepth 2 -name "index.html" | head -1 | xargs dirname) && \
+    mv "$INNER" /opt/kaltura/apps/kmc-analytics/${ANALYTICS_VERSION} && \
+    ln -s /opt/kaltura/apps/kmc-analytics/${ANALYTICS_VERSION} /opt/kaltura/apps/kmc-analytics/latest && \
+    rm -rf /tmp/analytics.zip /tmp/analytics_extract
 
 RUN LDAP_LIBDIR=$(find /usr/lib -name "libldap.so" | head -1 | xargs dirname | sed 's|/usr/||') \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
