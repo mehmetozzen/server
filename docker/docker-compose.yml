@@ -217,9 +217,13 @@ services:
       context: ..
       dockerfile: docker/analytics-receiver/Dockerfile
     container_name: kaltura_analytics_receiver
+    env_file: ./kaltura.conf      # DB1_USER / DB1_PASS for entry enrichment
     environment:
       DRUID_OVERLORD: http://druid-coordinator:8081
       FLUSH_INTERVAL_MS: "15000"
+      DB1_HOST: mysql
+      DB1_PORT: "3306"
+      DB1_NAME: kaltura
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9999/health"]
       interval: 15s
