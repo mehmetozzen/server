@@ -26,6 +26,33 @@ MARKER="$APP_DIR/.kaltura_installed"
 HTML5LIB_VERSION="${HTML5LIB_VERSION:-v2.7.4}"
 STUDIO_VERSION="${STUDIO_VERSION:-v2.2.3}"
 
+# ── Logging helpers ──────────────────────────────────────────────────────────
+# One consistent prefix; warnings go to stderr so `... 2>&1 | grep WARN` works.
+log()  { echo "[kaltura] $*"; }
+warn() { echo "[kaltura] WARN: $*" >&2; }
+
+# ── Dependency connectivity probe ────────────────────────────────────────────
+# Probe a backing service and print a clear reachable/unreachable line, so a
+# missing dependency is visible at boot instead of failing silently at request
+# time. Retries briefly (required services are already gated healthy by compose;
+# the optional Druid boots independently and may still be coming up).
+#   probe <label> <required|optional> <command...>
+probe() {
+    local label="$1" mode="$2"; shift 2
+    local i=0 reachable=1
+    while [ "$i" -lt 8 ]; do
+        if "$@" >/dev/null 2>&1; then reachable=0; break; fi
+        i=$(( i + 1 )); sleep 2
+    done
+    if [ "$reachable" -eq 0 ]; then
+        log "  $(printf '%-26s' "$label") reachable"
+    elif [ "$mode" = optional ]; then
+        log "  $(printf '%-26s' "$label") not up yet (optional — boots independently)"
+    else
+        warn "$(printf '%-26s' "$label") UNREACHABLE"
+    fi
+}
+
 # ── Install local CA into container trust store (mkcert HTTPS support) ────────
 if [ -f /opt/kaltura/certs/rootCA.pem ]; then
     cp /opt/kaltura/certs/rootCA.pem /usr/local/share/ca-certificates/mkcert-rootCA.crt
@@ -106,6 +133,15 @@ until mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 -e "SE
     sleep 3
 done
 echo "[kaltura] MySQL is ready."
+
+# ── Dependency connectivity ────────────────────────────────────────────────────
+# MySQL is confirmed above; report the rest so any missing backend is obvious.
+log "Checking service connectivity..."
+probe "MySQL    ($DB_HOST:$DB_PORT)"  required mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 -e "SELECT 1"
+probe "Sphinx   (sphinx:9312)"        required mysql -h sphinx -P 9312 --ssl=0 -e "SHOW TABLES"
+probe "Memcache (memcache:11211)"     required bash -c 'exec 3<>/dev/tcp/memcache/11211'
+probe "Bundler  (bundler:8080)"       required curl -sf http://bundler:8080/health
+probe "Druid    (druid-broker:8082)"  optional curl -sf http://druid-broker:8082/status/health
 
 # ── Per-deployment secrets (preserved across container restarts) ───────────────
 # These are random values referenced as @TOKEN@, @POLL_SECRET@, etc. in templates.
@@ -952,5 +988,12 @@ PHP
         rm -f /tmp/fix_uiconf.php
     fi
 fi
+
+# ── Ready ──────────────────────────────────────────────────────────────────────
+log "────────────────────────────────────────────────────────────"
+log "Kaltura is ready at ${SERVICE_URL}"
+log "  KMC:            ${SERVICE_URL}/index.php/kmcng"
+log "  Admin Console:  ${SERVICE_URL}/admin_console   (${ADMIN_EMAIL} / ${ADMIN_PASS})"
+log "────────────────────────────────────────────────────────────"
 
 wait "$APACHE_PID"
