@@ -711,11 +711,17 @@ if [ "${DWH_TABLE_COUNT:-0}" -eq 0 ] && [ -d "$DWH_DDL/ddl" ]; then
         -e 's/VARCHAR(50) DEFAULT NULL/VARCHAR(50) NOT NULL DEFAULT '"'"''"'"'/g' \
         {} \;
     echo "[kaltura] Loading DWH schema into kalturadw..."
+    # MySQL errors go to this log (NOT /dev/null) so a partial load is diagnosable.
+    # --force keeps loading past per-statement errors; every error is captured here
+    # with its file context, and the table counts are verified afterwards.
+    DWH_LOG="$LOG_DIR/dwh_load.log"
+    : > "$DWH_LOG"
     _mysql_run() {
         local db="$1"; local f="$2"
         [ -f "$f" ] || return 0
+        echo "=== $db < $f ===" >> "$DWH_LOG"
         mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" \
-            --ssl=0 --force "$db" < "$f" 2>/dev/null; return 0
+            --ssl=0 --force "$db" < "$f" 2>> "$DWH_LOG"; return 0
     }
     _mysql_batch() {
         # Batch all plain files (no DELIMITER) in one connection; run DELIMITER files individually
@@ -729,9 +735,10 @@ if [ "${DWH_TABLE_COUNT:-0}" -eq 0 ] && [ -d "$DWH_DDL/ddl" ]; then
                 plain="$plain $f"
             fi
         done
+        echo "=== $db < (batch: $(echo $plain | wc -w) plain files) ===" >> "$DWH_LOG"
         # shellcheck disable=SC2086
         [ -n "$plain" ] && cat $plain 2>/dev/null | mysql -h"$DB_HOST" -P"$DB_PORT" \
-            -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 --force "$db" 2>/dev/null; true
+            -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 --force "$db" 2>> "$DWH_LOG"; true
         for f in $delim_files; do _mysql_run "$db" "$f"; done
     }
     _mysql_batch kalturadw_bisources "$DWH_DDL/ddl/bi_sources/"*.sql
@@ -749,7 +756,7 @@ if [ "${DWH_TABLE_COUNT:-0}" -eq 0 ] && [ -d "$DWH_DDL/ddl" ]; then
         "$DWH_DDL/ddl/dw/fms/"*.sql \
         "$DWH_DDL/ddl/setup/populate_time_dim.sql" \
         "$DWH_DDL/ddl/setup/populate_dwh_dim_ip_ranges.sql"
-    mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 2>/dev/null <<SQL
+    mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 2>> "$DWH_LOG" <<SQL
 CREATE USER IF NOT EXISTS 'etl'@'%' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON kalturadw.*           TO 'etl'@'%';
 GRANT ALL PRIVILEGES ON kalturadw_ds.*        TO 'etl'@'%';
@@ -758,7 +765,20 @@ GRANT SELECT, INSERT, UPDATE ON kalturalog.*  TO 'etl'@'%';
 GRANT SELECT ON ${DB_NAME}.*                  TO 'etl'@'%';
 FLUSH PRIVILEGES;
 SQL
-    echo "[kaltura] DWH schema loaded."
+    # ── Verify what actually landed (a silent partial load is the #1 DWH pitfall) ──
+    _dwh_count() {
+        mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 -N \
+            -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$1'" 2>/dev/null
+    }
+    DWH_MAIN_TABLES=$(_dwh_count kalturadw)
+    echo "[kaltura] DWH tables: kalturadw=${DWH_MAIN_TABLES:-0} ds=$(_dwh_count kalturadw_ds) bisources=$(_dwh_count kalturadw_bisources) log=$(_dwh_count kalturalog)"
+    # kalturadw should hold ~140 tables; far fewer means the DDL failed mid-load.
+    if [ "${DWH_MAIN_TABLES:-0}" -lt 100 ]; then
+        echo "[kaltura] WARN: kalturadw has only ${DWH_MAIN_TABLES:-0} tables (expected ~140) — DWH load incomplete. See $DWH_LOG"
+        grep -iE "ERROR [0-9]+" "$DWH_LOG" 2>/dev/null | sort -u | head -5 | sed 's/^/[kaltura]   /'
+    else
+        echo "[kaltura] DWH schema loaded (${DWH_MAIN_TABLES} tables in kalturadw)."
+    fi
 fi
 set -e
 
