@@ -126,7 +126,10 @@ RUN curl -fsSL "https://github.com/kaltura/dwh/archive/refs/heads/${DWH_VERSION}
 
 # html5lib (mwEmbed V2 player) — stored OUTSIDE the kaltura_web volume so the
 # named volume cannot shadow it. entrypoint.sh copies it in on first run.
+# ENV (not just ARG) so entrypoint.sh can resolve the version at runtime instead
+# of hardcoding it — bumping this arg must not silently break the runtime patches.
 ARG HTML5LIB_VERSION=v2.7.4
+ENV HTML5LIB_VERSION=${HTML5LIB_VERSION}
 RUN curl -fsSL "https://github.com/kaltura/mwEmbed/archive/refs/heads/master.tar.gz" \
         -o /tmp/mwembed.tar.gz \
     && mkdir -p /opt/kaltura/html5lib_image \

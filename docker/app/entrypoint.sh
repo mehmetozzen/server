@@ -20,6 +20,12 @@ ADMIN_EMAIL="${ADMIN_CONSOLE_ADMIN_MAIL:-admin@kaltura.local}"
 ADMIN_PASS="${ADMIN_CONSOLE_PASSWORD:-Admin1234!}"
 MARKER="$APP_DIR/.kaltura_installed"
 
+# Vendored-app versions. Sourced from the image ENV (set in the Dockerfile from
+# the matching build ARG); the fallbacks keep the script self-contained. Every
+# version-specific path/patch below references these — never hardcode a version.
+HTML5LIB_VERSION="${HTML5LIB_VERSION:-v2.7.4}"
+STUDIO_VERSION="${STUDIO_VERSION:-v2.2.3}"
+
 # ── Install local CA into container trust store (mkcert HTTPS support) ────────
 if [ -f /opt/kaltura/certs/rootCA.pem ]; then
     cp /opt/kaltura/certs/rootCA.pem /usr/local/share/ca-certificates/mkcert-rootCA.crt
@@ -786,12 +792,12 @@ set -e
 # embedIframeJsAction reads html5_version; if empty it exits with "version not found"
 APPVERSIONS="$APP_DIR/configurations/appVersions.ini"
 if [ -f "$APPVERSIONS" ] && grep -qE '^html5_version\s*=\s*$' "$APPVERSIONS" 2>/dev/null; then
-    sed -i "s|^html5_version = *$|html5_version = v2.7.4|" "$APPVERSIONS"
-    echo "[kaltura] Set html5_version = v2.7.4 in appVersions.ini"
+    sed -i "s|^html5_version = *$|html5_version = ${HTML5LIB_VERSION}|" "$APPVERSIONS"
+    echo "[kaltura] Set html5_version = ${HTML5LIB_VERSION} in appVersions.ini"
 fi
 if [ -f "$APPVERSIONS" ] && grep -qE '^studio_version\s*=\s*$' "$APPVERSIONS" 2>/dev/null; then
-    sed -i "s|^studio_version = *$|studio_version = ${STUDIO_VERSION:-v2.2.3}|" "$APPVERSIONS"
-    echo "[kaltura] Set studio_version = ${STUDIO_VERSION:-v2.2.3} in appVersions.ini"
+    sed -i "s|^studio_version = *$|studio_version = ${STUDIO_VERSION}|" "$APPVERSIONS"
+    echo "[kaltura] Set studio_version = ${STUDIO_VERSION} in appVersions.ini"
 fi
 if [ -f "$APPVERSIONS" ] && grep -qE '^studio_v3_version\s*=\s*$' "$APPVERSIONS" 2>/dev/null; then
     sed -i "s|^studio_v3_version = *$|studio_v3_version = ${STUDIO_V3_VERSION:-v3.18.0}|" "$APPVERSIONS"
@@ -819,7 +825,7 @@ fi
 #
 # Fix B (main.min.js, simple sed): wraps cachePlayers() in a try/finally so
 #   requestEnded('list') always fires even if cachePlayers() throws.
-STUDIO_DIR="/opt/kaltura/apps/studio/v2.2.3"
+STUDIO_DIR="/opt/kaltura/apps/studio/${STUDIO_VERSION}"
 STUDIO_INDEX="$STUDIO_DIR/index.html"
 STUDIO_MIN="$STUDIO_DIR/main.min.js"
 STUDIO_INI="$STUDIO_DIR/studio.ini"
@@ -849,13 +855,13 @@ fi
 
 
 # Fix C: update studio.ini — point html5lib to local server and align html5_version with it
-# html5_version mismatch (v2.86.1 vs our v2.7.4) causes Studio to request non-existent resources.
+# html5_version mismatch (Studio ships v2.86.1) makes Studio request non-existent resources.
 if [ -f "$STUDIO_INI" ]; then
     sed -i \
-        -e "s|http://kgit\.html5video\.org/tags/v2\.86\.1/mwEmbedLoader\.php|${SERVICE_PROTOCOL}://${WWW_HOST}/html5/html5lib/v2.7.4/mwEmbedLoader.php|g" \
-        -e "s|\"html5_version\":\"v2\.86\.1\"|\"html5_version\":\"v2.7.4\"|g" \
+        -e "s|http://kgit\.html5video\.org/tags/v2\.86\.1/mwEmbedLoader\.php|${SERVICE_PROTOCOL}://${WWW_HOST}/html5/html5lib/${HTML5LIB_VERSION}/mwEmbedLoader.php|g" \
+        -e "s|\"html5_version\":\"v2\.86\.1\"|\"html5_version\":\"${HTML5LIB_VERSION}\"|g" \
         "$STUDIO_INI" \
-        && echo "[kaltura] Studio studio.ini: set html5lib to local URL and html5_version=v2.7.4"
+        && echo "[kaltura] Studio studio.ini: set html5lib to local URL and html5_version=${HTML5LIB_VERSION}"
 fi
 
 # ── PHP 8.1 fix: KalturaUtils::formatString non-scalar input ──────────────────
@@ -864,7 +870,7 @@ fi
 # called with a non-string even inside @json_decode. Guard non-scalar inputs.
 # This fixes the "Fatal error: json_decode(): Argument #1 ($json) must be of
 # type string, stdClass given" crash in services.php?service=uiConfJs.
-KALTURA_UTILS_FILE="$WEB_DIR/html5/html5lib/v2.7.4/modules/KalturaSupport/KalturaUtils.php"
+KALTURA_UTILS_FILE="$WEB_DIR/html5/html5lib/${HTML5LIB_VERSION}/modules/KalturaSupport/KalturaUtils.php"
 if [ -f "$KALTURA_UTILS_FILE" ] && ! grep -q 'is_scalar.*PHP81' "$KALTURA_UTILS_FILE" 2>/dev/null; then
     sed -i 's|public function formatString( \$str ) {|public function formatString( $str ) { /* PHP81 */ if(!is_scalar($str)\&\&!is_null($str)){return $str;}|' \
         "$KALTURA_UTILS_FILE" \
@@ -875,7 +881,7 @@ fi
 # ── PHP 8.1 fix: KalturaCommon memcache flags key missing ────────────────────
 # cache.ini [memcacheLocal] has no 'flags' key; PHP 8.1 promotes undefined array
 # key access to E_WARNING. Default flags to 0 (no compression) when absent.
-KALTURA_COMMON="$WEB_DIR/html5/html5lib/v2.7.4/modules/KalturaSupport/KalturaCommon.php"
+KALTURA_COMMON="$WEB_DIR/html5/html5lib/${HTML5LIB_VERSION}/modules/KalturaSupport/KalturaCommon.php"
 if [ -f "$KALTURA_COMMON" ] && ! grep -q 'PHP81' "$KALTURA_COMMON" 2>/dev/null; then
     sed -i "s|\\\$wgMemcacheConfiguration\['flags'\]|(/* PHP81 */isset(\$wgMemcacheConfiguration['flags']) ? \$wgMemcacheConfiguration['flags'] : 0)|g" \
         "$KALTURA_COMMON" \
