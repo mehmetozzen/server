@@ -21,6 +21,7 @@ const geoip = require('geoip-lite');
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const DRUID_OVERLORD   = process.env.DRUID_OVERLORD || 'http://druid-coordinator:8081';
+const DRUID_BROKER     = process.env.DRUID_BROKER || 'http://druid-broker:8082';
 const DATASOURCE       = 'player-events-historical';
 const FLUSH_INTERVAL_MS = parseInt(process.env.FLUSH_INTERVAL_MS || '15000', 10);
 const MAX_BUFFER       = parseInt(process.env.MAX_BUFFER || '500', 10);
@@ -311,6 +312,156 @@ function flush() {
   r.write(payload); r.end();
 }
 
+// ── Entry-lifecycle collector (Contributors) ─────────────────────────────────
+// Contributors analytics (Added Entries / Added Minutes / unique uploaders) is
+// fed by ENTRY metadata, NOT player beacons: each created entry is a
+// "physicalAdd" event in the `entry-lifecycle` Druid datasource. Kaltura's
+// closed cloud emits these server-side; self-hosted ships no emitter, so we read
+// the entry table and ingest them ourselves — the legitimate equivalent.
+// (kKavaBase: eventType=physicalAdd, dims partnerId/entryId/kuserId/userType/
+//  mediaType/sourceType/categories, metrics delta(+1) and duration(seconds).)
+const ELIFECYCLE_DS  = 'entry-lifecycle';
+const ELIFE_POLL_MS  = parseInt(process.env.ELIFE_POLL_MS || '60000', 10);
+const ELIFE_MEDIA    = { 1: 'Video', 2: 'Image', 5: 'Audio', 201: 'Live stream', 202: 'Live stream', 203: 'Live stream' };
+// entry.source (EntrySourceType) → KAVA sourceType label (kKavaBase $sourceTypes).
+const ELIFE_SOURCE   = { 0: 'Other', 1: 'Upload', 2: 'Webcam', 5: 'Url', 6: 'Text', 20: 'Kaltura',
+  29: 'Live stream', 30: 'Live stream', 31: 'Live stream', 32: 'Live stream', 33: 'Live channel',
+  34: 'Recorded live stream', 35: 'Clip', 36: 'Recorded live stream', 37: 'Classroom Capture' };
+const ingestedEntries = new Set(); // entries we have emitted a physicalAdd for
+const deletedEntries  = new Set(); // entries we have emitted a physicalDelete for
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function druidQuery(q) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(q);
+    const u = new URL(DRUID_BROKER + '/druid/v2/');
+    const r = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
+      (res) => { let d = ''; res.on('data', (c) => (d += c));
+        res.on('end', () => { try { resolve(JSON.parse(d || '[]')); } catch (e) { reject(e); } }); });
+    r.on('error', reject); r.write(payload); r.end();
+  });
+}
+
+function postDruidTask(task) {
+  return new Promise((resolve) => {
+    const payload = JSON.stringify(task);
+    const u = new URL(DRUID_OVERLORD + '/druid/indexer/v1/task');
+    const r = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
+      (res) => { let d = ''; res.on('data', (c) => (d += c));
+        res.on('end', () => { if (res.statusCode >= 300) console.error(`[receiver] task HTTP ${res.statusCode}: ${d}`); resolve(); }); });
+    r.on('error', (e) => { console.error(`[receiver] task error: ${e.message}`); resolve(); });
+    r.write(payload); r.end();
+  });
+}
+
+// On startup, learn which entries already have add/delete events in Druid so a
+// receiver restart cannot re-emit them (double-counting). THROWS if Druid is
+// unreachable — start() retries so a not-yet-ready Druid never seeds us empty.
+async function seedIngestedEntries() {
+  const rows = await druidQuery({
+    queryType: 'groupBy', dataSource: ELIFECYCLE_DS,
+    intervals: ['2000-01-01T00:00:00Z/2100-01-01T00:00:00Z'],
+    granularity: 'all', dimensions: ['entryId', 'eventType'],
+    aggregations: [{ type: 'count', name: 'c' }],
+  });
+  for (const r of rows) {
+    if (r.event.eventType === 'physicalAdd') ingestedEntries.add(r.event.entryId);
+    else if (r.event.eventType === 'physicalDelete') deletedEntries.add(r.event.entryId);
+  }
+  return ingestedEntries.size;
+}
+
+// Build one entry-lifecycle row. sign = +1 (add, created_at) or -1 (delete,
+// updated_at) — delta and duration are negated on delete so net totals balance.
+async function lifecycleEvent(e, eventType, sign) {
+  let categories = [];
+  try {
+    const [cats] = await pool.query(
+      'SELECT c.full_name FROM category_entry ce JOIN category c ON c.id = ce.category_id ' +
+      'WHERE ce.entry_id = ? AND ce.status = 1 LIMIT 20', [e.id]);
+    categories = cats.map((r) => String(r.full_name || '')).filter(Boolean);
+  } catch { /* categories optional */ }
+  const tsCol = sign > 0 ? e.created_at : (e.updated_at || e.created_at);
+  const ts = tsCol instanceof Date ? tsCol : new Date(tsCol || Date.now());
+  const durSec = Math.round((e.length_in_msecs || 0) / 1000);
+  return {
+    __time: ts.toISOString(),
+    eventType,
+    partnerId: String(e.partner_id),
+    entryId: String(e.id),
+    // The uploader as the NUMERIC kuser id — the contributor reports enrich it
+    // back to a name via a kuserPeer PK lookup (reportType 39 genericQueryEnrich
+    // and reportType 5 getUserScreenNameWithFallback both key on the numeric id).
+    kuserId: String(e.kuser_id || ''),
+    entryCreatorId: String(e.kuser_id || ''),
+    userType: 'User',
+    mediaType: ELIFE_MEDIA[e.media_type] || 'Video',
+    sourceType: ELIFE_SOURCE[e.source] || 'Other',  // how the content was added
+    categories,
+    count: 1,
+    delta: sign,             // +1 add / -1 delete
+    duration: sign * durSec, // seconds, negative on delete
+  };
+}
+
+function buildLifecycleTask(events) {
+  return {
+    type: 'index_parallel',
+    spec: {
+      dataSchema: {
+        dataSource: ELIFECYCLE_DS,
+        timestampSpec: { column: '__time', format: 'iso' },
+        dimensionsSpec: { dimensions: ['eventType', 'partnerId', 'entryId', 'kuserId', 'entryCreatorId', 'userType', 'mediaType', 'sourceType',
+          { type: 'string', name: 'categories', multiValueHandling: 'ARRAY' }] },
+        metricsSpec: [
+          { type: 'count', name: 'count' },
+          { type: 'longSum', name: 'delta', fieldName: 'delta' },
+          { type: 'longSum', name: 'duration', fieldName: 'duration' },
+        ],
+        // Entries are sparse and each is distinct (keep per-entry rows for entryId/kuserId cardinality).
+        granularitySpec: { type: 'uniform', segmentGranularity: 'MONTH', queryGranularity: 'NONE', rollup: false },
+      },
+      ioConfig: { type: 'index_parallel', inputSource: { type: 'inline', data: events.map((e) => JSON.stringify(e)).join('\n') }, inputFormat: { type: 'json' }, appendToExisting: true },
+      tuningConfig: { type: 'index_parallel' },
+    },
+  };
+}
+
+// Poll the entry table: emit physicalAdd for new entries (once their duration is
+// known) and physicalDelete for entries that have since been deleted.
+async function pollEntryLifecycle() {
+  if (!pool) return;
+  let rows;
+  try {
+    [rows] = await pool.query(
+      'SELECT id, partner_id, kuser_id, media_type, length_in_msecs, source, status, created_at, updated_at ' +
+      'FROM entry WHERE partner_id > 0 ORDER BY created_at');
+  } catch (e) { console.error(`[receiver] entry-lifecycle query: ${e.message}`); return; }
+
+  const events = [];
+  let added = 0, removed = 0;
+  for (const e of rows) {
+    const id = String(e.id);
+    if (e.status === 3) {
+      // Deleted: emit physicalDelete once, only if we had counted the add.
+      if (!ingestedEntries.has(id) || deletedEntries.has(id)) continue;
+      events.push(await lifecycleEvent(e, 'physicalDelete', -1));
+      deletedEntries.add(id); removed++;
+    } else {
+      // Live: emit physicalAdd once its duration is known (images carry none).
+      const durationKnown = (e.media_type === 2 || (e.length_in_msecs || 0) > 0);
+      if (ingestedEntries.has(id) || !durationKnown) continue;
+      events.push(await lifecycleEvent(e, 'physicalAdd', +1));
+      ingestedEntries.add(id); added++;
+    }
+  }
+  if (events.length === 0) return;
+  await postDruidTask(buildLifecycleTask(events));
+  console.log(`[receiver] entry-lifecycle: +${added} added, -${removed} deleted (Contributors)`);
+}
+
 // ── HTTP server ──────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
   if (req.url.startsWith('/health')) { res.writeHead(200); res.end('ok'); return; }
@@ -336,6 +487,29 @@ async function start() {
     pool = null;
   }
   setInterval(flush, FLUSH_INTERVAL_MS);
+  // Entry-lifecycle collector (Contributors): seed add/delete state from Druid
+  // FIRST — retry until Druid answers, because seeding empty against a not-yet-
+  // ready Druid would make us re-ingest every entry and double-count. Only poll
+  // the entry table once a successful seed has run.
+  if (pool) {
+    let seeded = false;
+    for (let i = 0; i < 30 && !seeded; i++) {
+      try {
+        const n = await seedIngestedEntries();
+        console.log(`[receiver] entry-lifecycle: seeded ${n} added / ${deletedEntries.size} deleted from Druid`);
+        seeded = true;
+      } catch (e) {
+        console.log(`[receiver] entry-lifecycle: waiting for Druid before seeding (${e.message})`);
+        await sleep(5000);
+      }
+    }
+    if (seeded) {
+      await pollEntryLifecycle();
+      setInterval(() => { pollEntryLifecycle().catch((e) => console.error(`[receiver] entry-lifecycle poll: ${e.message}`)); }, ELIFE_POLL_MS).unref();
+    } else {
+      console.error('[receiver] entry-lifecycle: Druid never reachable for seeding — collector disabled to avoid double-counting');
+    }
+  }
   server.listen(PORT, () => console.log(`[receiver] listening on :${PORT}, flush ${FLUSH_INTERVAL_MS}ms → ${DRUID_OVERLORD}`));
 }
 start();

@@ -220,6 +220,7 @@ services:
     env_file: ./kaltura.conf      # DB1_USER / DB1_PASS for entry enrichment
     environment:
       DRUID_OVERLORD: http://druid-coordinator:8081
+      DRUID_BROKER: http://druid-broker:8082
       FLUSH_INTERVAL_MS: "15000"
       DB1_HOST: mysql
       DB1_PORT: "3306"
