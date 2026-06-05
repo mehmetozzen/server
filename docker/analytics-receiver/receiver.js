@@ -462,6 +462,151 @@ async function pollEntryLifecycle() {
   console.log(`[receiver] entry-lifecycle: +${added} added, -${removed} deleted (Contributors)`);
 }
 
+// ── Usage collector (storage + transcoding) ──────────────────────────────────
+// The KMC-NG "Usage" tab reads two further datasources Kaltura's cloud fills
+// server-side: `storage-usage` (Stored Media — net bytes currently held) and
+// `transcoding-usage` (Transcoded Media / hours — one-time transcoding consumed).
+// Both are derived from flavor_asset: stored bytes = sum of a ready entry's
+// flavor sizes; transcoded flavors are the non-original ones. Storage is SIGNED
+// (physicalAdd +bytes, physicalDelete -bytes) so the net equals live storage;
+// transcoding is consumption — emitted once and never reversed.
+// (Outbound bandwidth / active users come from delivery & api-usage datasources
+//  we do not feed, so those Usage figures legitimately stay zero.)
+const STORAGE_DS       = 'storage-usage';
+const TRANSCODING_DS   = 'transcoding-usage';
+const STORAGE_DIMS     = ['eventType', 'partnerId', 'partnerParentId', 'entryId', 'categories', 'kuserId', 'mediaType', 'sourceType', 'videoCodec'];
+const TRANSCODING_DIMS = ['partnerId', 'partnerParentId', 'entryId', 'categories', 'kuserId', 'mediaType', 'sourceType', 'status', 'flavorParamsId', 'videoCodec'];
+const storedEntries     = new Set(); // entries with a storage-usage physicalAdd
+const storageDeleted    = new Set(); // entries with a storage-usage physicalDelete
+const transcodedEntries = new Set(); // entries whose transcoding rows are in Druid
+
+// Generic Druid index task for a usage datasource (rollup off, monthly segments).
+function buildUsageTask(dataSource, dims, metricsSpec, rows) {
+  const dimensions = dims.map((d) => d === 'categories'
+    ? { type: 'string', name: 'categories', multiValueHandling: 'ARRAY' } : d);
+  return {
+    type: 'index_parallel',
+    spec: {
+      dataSchema: {
+        dataSource,
+        timestampSpec: { column: '__time', format: 'iso' },
+        dimensionsSpec: { dimensions },
+        metricsSpec,
+        granularitySpec: { type: 'uniform', segmentGranularity: 'MONTH', queryGranularity: 'NONE', rollup: false },
+      },
+      ioConfig: { type: 'index_parallel', inputSource: { type: 'inline', data: rows.map((e) => JSON.stringify(e)).join('\n') }, inputFormat: { type: 'json' }, appendToExisting: true },
+      tuningConfig: { type: 'index_parallel' },
+    },
+  };
+}
+
+// Entry-level dimensions shared by storage + transcoding rows.
+function entryDims(e) {
+  return {
+    partnerId: String(e.partner_id),
+    partnerParentId: '0',
+    entryId: String(e.id),
+    categories: [],                                   // Usage Overview totals don't group by category
+    kuserId: String(e.kuser_id || ''),
+    mediaType: ELIFE_MEDIA[e.media_type] || 'Video',
+    sourceType: ELIFE_SOURCE[e.source] || 'Other',
+    videoCodec: '',
+  };
+}
+
+// On startup, learn which entries already have usage rows in Druid (avoids
+// double-counting on restart). A missing datasource returns [] (HTTP 200); only
+// an unreachable broker throws, so start()'s retry loop handles cold starts.
+async function seedUsage() {
+  const groupBy = (dataSource, dimensions) => druidQuery({ queryType: 'groupBy', dataSource,
+    intervals: ['2000-01-01T00:00:00Z/2100-01-01T00:00:00Z'], granularity: 'all',
+    dimensions, aggregations: [{ type: 'count', name: 'c' }] });
+  for (const r of await groupBy(STORAGE_DS, ['entryId', 'eventType'])) {
+    if (r.event.eventType === 'physicalAdd') storedEntries.add(r.event.entryId);
+    else if (r.event.eventType === 'physicalDelete') storageDeleted.add(r.event.entryId);
+  }
+  for (const r of await groupBy(TRANSCODING_DS, ['entryId'])) transcodedEntries.add(r.event.entryId);
+  return storedEntries.size;
+}
+
+// Poll flavor_asset for storage (net bytes per ready entry) and transcoding
+// (per non-original flavor) usage, and ingest the new rows.
+async function pollUsage() {
+  if (!pool) return;
+
+  // ── storage-usage: one signed `size` row per entry ─────────────────────────
+  let entries;
+  try {
+    // Sum every sized flavor (KB). Deleted flavors keep their size, so the
+    // physicalDelete reverses exactly what the physicalAdd recorded.
+    [entries] = await pool.query(
+      'SELECT e.id, e.partner_id, e.kuser_id, e.media_type, e.source, e.status, e.created_at, e.updated_at, ' +
+      'COALESCE(SUM(GREATEST(fa.size, 0)), 0) AS kb ' +
+      'FROM entry e LEFT JOIN flavor_asset fa ON fa.entry_id = e.id ' +
+      'WHERE e.partner_id > 0 GROUP BY e.id ORDER BY e.created_at');
+  } catch (e) { console.error(`[receiver] storage-usage query: ${e.message}`); return; }
+
+  const storageRows = [];
+  let added = 0, removed = 0;
+  for (const e of entries) {
+    const id = String(e.id);
+    const bytes = Number(e.kb || 0) * 1024;
+    const tsCol = e.status === 3 ? (e.updated_at || e.created_at) : e.created_at;
+    const when = (tsCol instanceof Date ? tsCol : new Date(tsCol || Date.now())).toISOString();
+    if (e.status === 3) {
+      if (!storedEntries.has(id) || storageDeleted.has(id)) continue;
+      storageRows.push({ __time: when, eventType: 'physicalDelete', ...entryDims(e), size: -bytes, count: 1 });
+      storageDeleted.add(id); removed++;
+    } else {
+      // Wait until the entry is READY (status 2) so all flavor sizes are final.
+      if (storedEntries.has(id) || e.status !== 2 || bytes <= 0) continue;
+      storageRows.push({ __time: when, eventType: 'physicalAdd', ...entryDims(e), size: bytes, count: 1 });
+      storedEntries.add(id); added++;
+    }
+  }
+  if (storageRows.length) {
+    await postDruidTask(buildUsageTask(STORAGE_DS, STORAGE_DIMS,
+      [{ type: 'count', name: 'count' }, { type: 'longSum', name: 'size', fieldName: 'size' }], storageRows));
+    console.log(`[receiver] storage-usage: +${added} added, -${removed} deleted`);
+  }
+
+  // ── transcoding-usage: one row per non-original flavor (consumed once) ──────
+  let flavors;
+  try {
+    [flavors] = await pool.query(
+      'SELECT fa.entry_id AS id, fa.flavor_params_id, fa.size AS kb, e.partner_id, e.kuser_id, ' +
+      'e.media_type, e.source, e.length_in_msecs, e.created_at ' +
+      'FROM flavor_asset fa JOIN entry e ON e.id = fa.entry_id ' +
+      'WHERE e.partner_id > 0 AND e.status = 2 AND fa.is_original = 0 AND fa.status = 2 AND fa.size > 0 ' +
+      'ORDER BY fa.entry_id');
+  } catch (e) { console.error(`[receiver] transcoding-usage query: ${e.message}`); return; }
+
+  const transRows = [];
+  const newlyTranscoded = new Set();
+  for (const f of flavors) {
+    if (transcodedEntries.has(String(f.id))) continue; // this entry's flavors already ingested
+    const when = (f.created_at instanceof Date ? f.created_at : new Date(f.created_at || Date.now())).toISOString();
+    transRows.push({
+      __time: when,
+      ...entryDims(f),
+      status: 'Success',
+      flavorParamsId: String(f.flavor_params_id),
+      flavorSize: Number(f.kb || 0) * 1024,                  // transcoded output bytes
+      duration: Math.round((f.length_in_msecs || 0) / 1000), // seconds of media transcoded
+      count: 1,
+    });
+    newlyTranscoded.add(String(f.id));
+  }
+  if (transRows.length) {
+    await postDruidTask(buildUsageTask(TRANSCODING_DS, TRANSCODING_DIMS,
+      [{ type: 'count', name: 'count' },
+       { type: 'longSum', name: 'flavorSize', fieldName: 'flavorSize' },
+       { type: 'longSum', name: 'duration', fieldName: 'duration' }], transRows));
+    for (const id of newlyTranscoded) transcodedEntries.add(id);
+    console.log(`[receiver] transcoding-usage: ${transRows.length} flavors across ${newlyTranscoded.size} entries`);
+  }
+}
+
 // ── HTTP server ──────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
   if (req.url.startsWith('/health')) { res.writeHead(200); res.end('ok'); return; }
@@ -487,27 +632,31 @@ async function start() {
     pool = null;
   }
   setInterval(flush, FLUSH_INTERVAL_MS);
-  // Entry-lifecycle collector (Contributors): seed add/delete state from Druid
-  // FIRST — retry until Druid answers, because seeding empty against a not-yet-
-  // ready Druid would make us re-ingest every entry and double-count. Only poll
-  // the entry table once a successful seed has run.
+  // Entry-lifecycle (Contributors) + usage (storage/transcoding) collectors:
+  // seed their state from Druid FIRST — retry until Druid answers, because
+  // seeding empty against a not-yet-ready Druid would re-ingest everything and
+  // double-count. Only poll the DB once a successful seed has run.
   if (pool) {
     let seeded = false;
     for (let i = 0; i < 30 && !seeded; i++) {
       try {
         const n = await seedIngestedEntries();
-        console.log(`[receiver] entry-lifecycle: seeded ${n} added / ${deletedEntries.size} deleted from Druid`);
+        const m = await seedUsage();
+        console.log(`[receiver] seeded from Druid: ${n} entries / ${deletedEntries.size} deleted (Contributors), ` +
+          `${m} stored / ${transcodedEntries.size} transcoded (Usage)`);
         seeded = true;
       } catch (e) {
-        console.log(`[receiver] entry-lifecycle: waiting for Druid before seeding (${e.message})`);
+        console.log(`[receiver] waiting for Druid before seeding (${e.message})`);
         await sleep(5000);
       }
     }
     if (seeded) {
       await pollEntryLifecycle();
+      await pollUsage();
       setInterval(() => { pollEntryLifecycle().catch((e) => console.error(`[receiver] entry-lifecycle poll: ${e.message}`)); }, ELIFE_POLL_MS).unref();
+      setInterval(() => { pollUsage().catch((e) => console.error(`[receiver] usage poll: ${e.message}`)); }, ELIFE_POLL_MS).unref();
     } else {
-      console.error('[receiver] entry-lifecycle: Druid never reachable for seeding — collector disabled to avoid double-counting');
+      console.error('[receiver] Druid never reachable for seeding — lifecycle/usage collectors disabled to avoid double-counting');
     }
   }
   server.listen(PORT, () => console.log(`[receiver] listening on :${PORT}, flush ${FLUSH_INTERVAL_MS}ms → ${DRUID_OVERLORD}`));
