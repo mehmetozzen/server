@@ -13,7 +13,7 @@ services:
       MYSQL_USER: ${DB1_USER:-kaltura}
       MYSQL_PASSWORD: ${DB1_PASS:-kaltura123}
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"   # host-only: containers reach MySQL via the `mysql` service name
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD"]
       interval: 10s
@@ -25,7 +25,7 @@ services:
     image: memcached:1.6-alpine
     container_name: kaltura_memcache
     ports:
-      - "11211:11211"
+      - "127.0.0.1:11211:11211"   # host-only: never expose memcached to the internet
 
   sphinx:
     build:
@@ -37,7 +37,7 @@ services:
       - ..:/opt/kaltura/app:ro
       - sphinx_data:/opt/sphinx
     ports:
-      - "9312:9312"
+      - "127.0.0.1:9312:9312"   # host-only: Sphinx is reached via the `sphinx` service name
     healthcheck:
       test: ["CMD", "mysql", "-h", "127.0.0.1", "-P", "9312", "-e", "SHOW TABLES"]
       interval: 10s
@@ -96,7 +96,7 @@ services:
       dockerfile: docker/bundler/Dockerfile
     container_name: kaltura_bundler
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"   # host-only: the app reaches the bundler over the compose network
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 15s
@@ -146,7 +146,7 @@ services:
       - druid_shared:/opt/shared
       - druid_coordinator_var:/opt/druid/var
     ports:
-      - "8081:8081"   # coordinator + overlord (task submission)
+      - "127.0.0.1:8081:8081"   # host-only: overlord task submission must NEVER be public (RCE risk)
 
   druid-broker:
     image: apache/druid:30.0.1
@@ -160,7 +160,7 @@ services:
     volumes:
       - druid_broker_var:/opt/druid/var
     ports:
-      - "8082:8082"   # native /druid/v2/ queries — druid_url target
+      - "127.0.0.1:8082:8082"   # host-only: the app queries the broker via the `druid-broker` service name
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8082/status/health || exit 1"]
       interval: 15s
@@ -206,7 +206,7 @@ services:
     volumes:
       - druid_router_var:/opt/druid/var
     ports:
-      - "8888:8888"   # web console
+      - "127.0.0.1:8888:8888"   # host-only web console: reach it via SSH tunnel, never the public internet
 
   # ── Analytics event receiver — ingests player KAVA beacons into Druid ────────
   # Apache proxies /api_v3/index.php?service=analytics&action=trackEvent here.
