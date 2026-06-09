@@ -86,8 +86,14 @@ const num = (v, d = 0) => { const n = parseFloat(v); return isNaN(n) ? d : n; };
 let pool = null;
 const entryCache = new Map(); // entryId -> { ownerId, mediaType, durationSec, categories }
 async function enrichEntry(entryId) {
-  if (entryCache.has(entryId)) return entryCache.get(entryId);
-  let meta = { ownerId: '', mediaType: 'VIDEO', durationSec: 0, categories: [] };
+  const cached = entryCache.get(entryId);
+  // Trust the cache once the real duration is known. An entry enriched before
+  // transcoding finishes reports length_in_msecs=0; caching that permanently
+  // would peg every later viewPeriod to percentile 0 — a flat engagement curve
+  // and 0% completion. Re-query provisional (0-duration) entries, but at most
+  // once a minute so genuinely duration-less entries (images/live) don't hammer the DB.
+  if (cached && (cached.durationSec > 0 || Date.now() - cached.fetchedAt < 60000)) return cached;
+  let meta = { ownerId: '', mediaType: 'VIDEO', durationSec: 0, categories: [], fetchedAt: Date.now() };
   if (pool) {
     try {
       const [rows] = await pool.query(
