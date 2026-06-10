@@ -23,6 +23,18 @@ log "Waiting for Kaltura initialization marker..."
 until [ -f "$MARKER" ]; do sleep 10; done
 log "Kaltura initialized ($(cat "$MARKER"))."
 
+# ── Hostname resolution: WWW_HOST → kaltura app container ─────────────────────
+# Same as the batch entrypoint: the recording-upload job calls the Kaltura API
+# at https://$WWW_HOST; without this mapping the name may resolve to the host
+# machine (or 127.0.0.1) instead of the app container.
+if [ -n "${WWW_HOST:-}" ]; then
+    until KALTURA_IP=$(getent hosts kaltura 2>/dev/null | awk '{print $1}' | head -1) && [ -n "$KALTURA_IP" ]; do
+        sleep 2
+    done
+    grep -q " $WWW_HOST" /etc/hosts || echo "$KALTURA_IP $WWW_HOST" >> /etc/hosts
+    log "Mapped $WWW_HOST -> $KALTURA_IP (kaltura app)."
+fi
+
 # ── /etc/kaltura.d/system.ini ──────────────────────────────────────────────────
 # The official cron scripts (alpha/crond/kaltura/clear_cache.sh) source this
 # env file; on bare metal the RPM installer creates it. Mirror it here.
@@ -53,6 +65,7 @@ $LOG_DIR/kaltura_scripts.log
 $LOG_DIR/cron.log
 $LOG_DIR/clear_cache.log
 $LOG_DIR/kaltura_cleanup.log
+$LOG_DIR/live_recordings.log
 {
     daily
     rotate 5
@@ -109,12 +122,25 @@ EOF
 cat > /etc/cron.d/kaltura <<EOF
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# cron strips the container env — pass through what the jobs need
+WWW_HOST=${WWW_HOST:-localhost}
+PROTOCOL=${PROTOCOL:-https}
+DB1_HOST=${DB1_HOST:-mysql}
+DB1_PORT=${DB1_PORT:-3306}
+DB1_NAME=${DB1_NAME:-kaltura}
+DB1_USER=${DB1_USER:-kaltura}
+DB1_PASS=${DB1_PASS:-}
+LIVE_PARTNER_ID=${LIVE_PARTNER_ID:-}
 
 # API cache cleanup (configurations/cron/api.template)
 */15 * * * * www-data $APP_DIR/alpha/crond/kaltura/clear_cache.sh >> $LOG_DIR/cron.log 2>&1
 
 # Deleted/old content file cleanup (configurations/cron/cleanup.template)
 */15 * * * * www-data /usr/local/bin/php $APP_DIR/alpha/scripts/batch/deleteOldContent.php --real-run --old-versions --files >> $LOG_DIR/kaltura_cleanup.log 2>&1
+
+# Live recordings → VOD entries (root: the files are written by the nginx
+# user of the live-rtmp container; no-op until LIVE_PARTNER_ID is set)
+* * * * * root /usr/local/bin/php $APP_DIR/docker/scheduler/upload_recordings.php >> $LOG_DIR/live_recordings.log 2>&1
 
 # Log rotation (state lives on the log volume so it survives recreates)
 17 * * * * root /usr/sbin/logrotate -s $LOG_DIR/.logrotate.state /etc/logrotate.d/kaltura >> $LOG_DIR/cron.log 2>&1

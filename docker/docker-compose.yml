@@ -245,8 +245,13 @@ services:
       context: ..
       dockerfile: docker/live-rtmp/Dockerfile
     container_name: kaltura_live_rtmp
+    depends_on:
+      analytics-receiver:
+        condition: service_started   # on_publish auth callback target
     ports:
       - "1935:1935"   # RTMP ingest — encoders (OBS/ffmpeg) connect here
+    volumes:
+      - live_recordings:/opt/kaltura/live_recordings
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
       interval: 15s
@@ -299,6 +304,7 @@ services:
       - kaltura_web:/opt/kaltura/web
       - kaltura_log:/opt/kaltura/log
       - kaltura_tmp:/opt/kaltura/tmp
+      - live_recordings:/opt/kaltura/live_recordings   # closed .flv recordings → VOD upload cron
       - ./scheduler/entrypoint.sh:/scheduler-entrypoint.sh:ro
     env_file: ./kaltura.conf
     environment:
@@ -313,6 +319,7 @@ services:
       start_period: 30s
 
 volumes:
+  live_recordings:
   mysql_data:
   kaltura_web:
   kaltura_log:

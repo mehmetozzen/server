@@ -613,9 +613,33 @@ async function pollUsage() {
   }
 }
 
+// ── Live publish auth (nginx-rtmp on_publish callback) ───────────────────────
+// nginx-rtmp POSTs the publish request (form-encoded: app, name, addr + the
+// encoder's query args, e.g. token=...) and refuses the stream unless we
+// answer 2xx. Token is a shared secret (env LIVE_PUBLISH_TOKEN); when unset,
+// publishing is open — fine for dev, set it in production.
+const LIVE_PUBLISH_TOKEN = process.env.LIVE_PUBLISH_TOKEN || '';
+function handleLivePublish(req, res) {
+  let body = '';
+  req.on('data', (c) => { body += c; if (body.length > 1e5) req.destroy(); });
+  req.on('end', () => {
+    const p = new URLSearchParams(body);
+    const name = p.get('name') || '?';
+    const addr = p.get('addr') || '?';
+    if (!LIVE_PUBLISH_TOKEN || p.get('token') === LIVE_PUBLISH_TOKEN) {
+      console.log(`[receiver] live publish ALLOWED: stream=${name} from=${addr}${LIVE_PUBLISH_TOKEN ? '' : ' (no token configured)'}`);
+      res.writeHead(200); res.end('ok');
+    } else {
+      console.warn(`[receiver] live publish DENIED (bad token): stream=${name} from=${addr}`);
+      res.writeHead(403); res.end('forbidden');
+    }
+  });
+}
+
 // ── HTTP server ──────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
   if (req.url.startsWith('/health')) { res.writeHead(200); res.end('ok'); return; }
+  if (req.url.startsWith('/live/publish')) { handleLivePublish(req, res); return; }
   let body = '';
   req.on('data', (c) => { body += c; if (body.length > 1e6) req.destroy(); });
   req.on('end', async () => {

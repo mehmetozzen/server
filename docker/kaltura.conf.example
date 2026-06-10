@@ -41,3 +41,12 @@ ADMIN_CONSOLE_PASSWORD=Admin1234!
 
 # ── Timezone ──────────────────────────────────────────────────
 TIME_ZONE=UTC
+
+# ── Live streaming ────────────────────────────────────────────
+# Publish auth shared secret: encoders must push
+#   rtmp://<host>:1935/kLive/<stream>?token=<LIVE_PUBLISH_TOKEN>
+# Empty = open publishing (dev only — set this in production!)
+LIVE_PUBLISH_TOKEN=
+# Partner that owns automatic VOD recordings of live streams
+# (empty = recording upload off)
+LIVE_PARTNER_ID=

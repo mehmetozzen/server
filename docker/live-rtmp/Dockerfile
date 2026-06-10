@@ -11,8 +11,11 @@ RUN apk add --no-cache nginx nginx-mod-rtmp
 
 COPY docker/live-rtmp/nginx.conf /etc/nginx/nginx.conf
 
-# HLS segment dir (official doc layout: /var/tmp/hlsme). Worker runs as nginx.
-RUN mkdir -p /var/tmp/hlsme && chown nginx:nginx /var/tmp/hlsme
+# HLS segment dir (official doc layout: /var/tmp/hlsme) + recordings dir
+# (named volume mounts here and inherits the nginx ownership on first use).
+# Worker runs as nginx.
+RUN mkdir -p /var/tmp/hlsme /opt/kaltura/live_recordings \
+    && chown nginx:nginx /var/tmp/hlsme /opt/kaltura/live_recordings
 
 EXPOSE 1935 8090
 CMD ["nginx", "-g", "daemon off;"]
