@@ -257,6 +257,39 @@ services:
       DB1_PORT: "3306"
       DB1_NAME: kaltura
 
+  # ── Scheduler — the host-cron jobs of a bare-metal install ───────────────────
+  # Containers have no host cron, so Kaltura's periodic maintenance
+  # (configurations/cron/*.template + configurations/logrotate/*.template)
+  # never ran: logs grew unbounded and old cache/content was never cleaned.
+  # Reuses the batch image (same PHP runtime the official scripts need) with a
+  # cron-running entrypoint.
+  scheduler:
+    build:
+      context: ..
+      dockerfile: docker/batch/Dockerfile
+    container_name: kaltura_scheduler
+    depends_on:
+      mysql:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/scheduler-entrypoint.sh"]
+    volumes:
+      - ..:/opt/kaltura/app
+      - kaltura_web:/opt/kaltura/web
+      - kaltura_log:/opt/kaltura/log
+      - kaltura_tmp:/opt/kaltura/tmp
+      - ./scheduler/entrypoint.sh:/scheduler-entrypoint.sh:ro
+    env_file: ./kaltura.conf
+    environment:
+      DB1_HOST: mysql
+      DB1_PORT: "3306"
+      DB1_NAME: kaltura
+    healthcheck:
+      test: ["CMD", "pgrep", "cron"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 volumes:
   mysql_data:
   kaltura_web:

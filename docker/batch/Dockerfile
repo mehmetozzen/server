@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Runtime tools and media processing (no ffmpeg from apt — using static build below)
+# cron + logrotate serve the scheduler service, which reuses this image with
+# its own entrypoint (docker/scheduler/entrypoint.sh).
 RUN apt-get update && apt-get install -y \
     default-mysql-client \
     openssl \
@@ -25,6 +27,8 @@ RUN apt-get update && apt-get install -y \
     gosu \
     imagemagick \
     mediainfo \
+    cron \
+    logrotate \
     && rm -rf /var/lib/apt/lists/*
 
 # mwader/static-ffmpeg ships native ARM64 + amd64 static builds, but omits

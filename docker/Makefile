@@ -12,7 +12,7 @@ CONF         := $(MAKEFILE_DIR)/kaltura.conf
 COMPOSE      := docker compose --env-file $(CONF) -f $(MAKEFILE_DIR)/docker-compose.yml
 
 # Core = everything except the Druid analytics stack (for low-RAM hosts).
-CORE_SERVICES  := mysql memcache sphinx bundler kaltura packager batch
+CORE_SERVICES  := mysql memcache sphinx bundler kaltura packager batch scheduler
 DRUID_SERVICES := druid-postgres druid-zookeeper druid-coordinator druid-broker \
                   druid-historical druid-middlemanager druid-router analytics-receiver
 
