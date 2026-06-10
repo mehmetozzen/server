@@ -91,6 +91,8 @@ setup_apache() {
             printf '    ProxyPassReverse /hls/ http://packager:88/hls/\n'
             printf '    ProxyPass /dash/ http://packager:88/dash/\n'
             printf '    ProxyPassReverse /dash/ http://packager:88/dash/\n'
+            printf '    ProxyPass /hlsme/ http://live-rtmp:8090/hlsme/\n'
+            printf '    ProxyPassReverse /hlsme/ http://live-rtmp:8090/hlsme/\n'
             printf '</VirtualHost>\n'
         fi
     } > "$CONF_OUT"

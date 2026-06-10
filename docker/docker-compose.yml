@@ -162,7 +162,8 @@ services:
     ports:
       - "127.0.0.1:8082:8082"   # host-only: the app queries the broker via the `druid-broker` service name
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8082/status/health || exit 1"]
+      # The druid image ships no curl/wget; bash /dev/tcp checks the port.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8082"]
       interval: 15s
       timeout: 10s
       retries: 30
@@ -227,6 +228,27 @@ services:
       DB1_NAME: kaltura
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9999/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Live media server (nginx-rtmp) ───────────────────────────────────────────
+  # Kaltura's official FOSS live path: RTMP ingest on the kLive application,
+  # HLS out at /hlsme/<stream>.m3u8 (proxied by Apache for same-origin playback).
+  # A KMC "Manual Live Stream" entry consumes the HLS URL.
+  # NOTE: port 1935 has no publish auth yet — on production restrict it by
+  # firewall to broadcaster IPs until the auto-provision hook (with token
+  # validation) lands.
+  live-rtmp:
+    build:
+      context: ..
+      dockerfile: docker/live-rtmp/Dockerfile
+    container_name: kaltura_live_rtmp
+    ports:
+      - "1935:1935"   # RTMP ingest — encoders (OBS/ffmpeg) connect here
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
       interval: 15s
       timeout: 5s
       retries: 5
