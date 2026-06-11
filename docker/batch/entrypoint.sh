@@ -129,6 +129,36 @@ if [ -f "$ASYNC_MAILER" ] && ! grep -q 'is_array.*texts_array' "$ASYNC_MAILER" 2
         || echo "[batch] WARN: KAsyncMailer.class.php reset() patch did not apply"
 fi
 
+# ── PHP 8 fix: KScheduleHelperManager::loadStatuses() TypeError on empty file ──
+# loadStatuses() computes time() - file_get_contents(cache/update.log). If the
+# file is ever left empty (e.g. a write cut short by a restart), PHP 8 throws a
+# fatal TypeError for int - "" (PHP 7 only warned). display_errors is off, so
+# KScheduleHelper dies silently every cycle BEFORE batchcontrol->reportStatus —
+# queue sizes never reach KGenericScheduler, shouldExecute() never passes, and
+# no on-demand worker (KAsyncConvert, KAsyncExtractMedia, ...) is ever spawned:
+# every transcode job sits in PENDING forever. Cast to (int) so an empty/corrupt
+# file degrades to 0 (i.e. "stale, refresh now") instead of killing the helper.
+# NOTE: $APP_DIR is bind-mounted from the host repo; the patch modifies that file.
+# It is idempotent (marker check) and must not be git-committed as a source change.
+SCHED_HELPER_MGR="$APP_DIR/batch/scheduler/KScheduleHelperManager.class.php"
+if [ -f "$SCHED_HELPER_MGR" ] && ! grep -qF '(int)file_get_contents($lastFileUpdateTimeStampPath)' "$SCHED_HELPER_MGR" 2>/dev/null; then
+    sed -i 's|= file_get_contents($lastFileUpdateTimeStampPath);|= /* PHP8 */(int)file_get_contents($lastFileUpdateTimeStampPath);|' \
+        "$SCHED_HELPER_MGR" \
+        && echo "[batch] KScheduleHelperManager.class.php: patched loadStatuses() int cast for PHP 8 empty update.log" \
+        || echo "[batch] WARN: KScheduleHelperManager.class.php loadStatuses() patch did not apply"
+fi
+
+# Defense in depth for the same bug: make sure cache/update.log holds a numeric
+# timestamp before the batch manager starts (covers a file corrupted while the
+# container was down, without waiting for the next loadStatuses() write).
+UPDATE_LOG="$APP_DIR/cache/update.log"
+[ -d "$UPDATE_LOG" ] && rm -rf "$UPDATE_LOG"   # kFile::fullMkdir can leave a dir here
+if ! grep -qE '^[0-9]+$' "$UPDATE_LOG" 2>/dev/null; then
+    date +%s > "$UPDATE_LOG"
+    chown www-data:www-data "$UPDATE_LOG" 2>/dev/null || true
+    echo "[batch] cache/update.log: seeded with current timestamp (was missing/empty/non-numeric)"
+fi
+
 # ── Start batch manager as www-data ───────────────────────────────────────────
 # Running as www-data ensures batch-created temp files are www-data-owned,
 # so the app container (also www-data) can rename/delete them without AGPL source changes.

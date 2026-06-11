@@ -809,11 +809,17 @@ async function setLiveStreams(name, entry) {
   const [rows] = await pool.query(
     'SELECT id FROM entry_server_node WHERE entry_id = ? AND server_type = 0 LIMIT 1', [entry.entryId]);
   if (!rows.length) return;
+  // The flavorId we report becomes the "s<N>" in the playManifest URL
+  // (index-s<N>.m3u8), which the live-rtmp bridge maps back to the published
+  // stream "<entryId>_<N>". Hardcoding '1' broke playback whenever the encoder
+  // used a different suffix (e.g. the backup URL publishes <entryId>_2) — the
+  // manifest then pointed at a stale/nonexistent playlist.
+  const suffix = (name.match(/_(\d+)$/) || [])[1] || '1';
   const ks = await partnerKs(MEDIA_SERVER_PARTNER);
   await kalturaApi({ service: 'entryServerNode', action: 'update', ks, id: String(rows[0].id),
     'entryServerNode:objectType': 'KalturaLiveEntryServerNode',
     'entryServerNode:streams:0:objectType': 'KalturaLiveStreamParams',
-    'entryServerNode:streams:0:flavorId': '1',
+    'entryServerNode:streams:0:flavorId': suffix,
     'entryServerNode:streams:0:bitrate': '1000000',
     'entryServerNode:streams:0:width': '1280',
     'entryServerNode:streams:0:height': '720',
@@ -941,13 +947,28 @@ const server = http.createServer((req, res) => {
 });
 
 async function start() {
-  try {
-    pool = mysql.createPool({ ...DB, waitForConnections: true, connectionLimit: 4, queueLimit: 0 });
-    await pool.query('SELECT 1');
-    console.log(`[receiver] DB connected (${DB.host}:${DB.port}/${DB.database}) — entry enrichment on`);
-  } catch (e) {
-    console.error(`[receiver] DB connect failed: ${e.message} — enrichment disabled (Contributors/categories/geo-by-entry will be empty)`);
-    pool = null;
+  // MySQL is a hard dependency for live orchestration: on_publish maps the
+  // stream name to an entry via lookupLiveEntry(), which needs the pool. A
+  // single failed attempt used to leave pool=null for the process lifetime —
+  // on cold starts (make reset) the receiver could come up before MySQL
+  // finished init, and live publishes then never registered (player stuck on
+  // "Off Air" while nginx-rtmp happily served segments). Retry until it
+  // answers; compose's depends_on(service_healthy) makes this a no-op on the
+  // happy path, the loop covers any ordering that still slips through.
+  for (let i = 0; i < 60 && !pool; i++) {
+    const p = mysql.createPool({ ...DB, waitForConnections: true, connectionLimit: 4, queueLimit: 0 });
+    try {
+      await p.query('SELECT 1');
+      pool = p;
+      console.log(`[receiver] DB connected (${DB.host}:${DB.port}/${DB.database}) — entry enrichment on`);
+    } catch (e) {
+      await p.end().catch(() => {});
+      console.log(`[receiver] waiting for MySQL (${e.message}) — attempt ${i + 1}/60`);
+      await sleep(5000);
+    }
+  }
+  if (!pool) {
+    console.error('[receiver] MySQL never reachable after 60 attempts — enrichment AND live orchestration disabled (Contributors/categories/geo empty, live entries will not register)');
   }
   setInterval(flush, FLUSH_INTERVAL_MS);
   // Entry-lifecycle (Contributors) + usage (storage/transcoding) collectors:

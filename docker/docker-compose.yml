@@ -262,6 +262,9 @@ services:
       DB1_HOST: mysql
       DB1_PORT: "3306"
       DB1_NAME: kaltura
+    depends_on:
+      mysql:
+        condition: service_healthy   # live orchestration needs the DB from the first on_publish
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9999/health"]
       interval: 15s
@@ -289,7 +292,9 @@ services:
     volumes:
       - live_recordings:/opt/kaltura/live_recordings
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
+      # 127.0.0.1, not localhost: busybox wget resolves localhost to ::1 first
+      # and nginx only listens on IPv4 — the container showed unhealthy forever.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
       interval: 15s
       timeout: 5s
       retries: 5
