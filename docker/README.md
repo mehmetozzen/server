@@ -60,6 +60,7 @@ analytics views (Engagement, Audience, Technology, Geo) cannot return data.
 
 | Service | Container | Image / Build | Ports | What it does |
 |---|---|---|---|---|
+| `kafka` | `kaltura_kafka` | `apache/kafka:3.8.0` (KRaft) | — | Streaming bus for the Real-Time analytics tab: the receiver produces every beacon to the `player-events-realtime` topic and a Druid kafka supervisor indexes it within seconds. Optional — skip on low-RAM hosts and only the Real-Time tab stays empty. |
 | `analytics-receiver` | `kaltura_analytics_receiver` | build `docker/analytics-receiver` (Node.js) | 9999 (internal) | Stand-in for the closed-source SaaS **Kanalony** pipeline. Apache proxies player analytics beacons (`?service=analytics&action=trackEvent`) here. It maps the numeric KAVA `eventType` to the string dimensions `kKavaBase.php` expects, builds the full Druid row (dimensions, metrics, `uniqueUserIds`/`uniqueSessionId` HLL sketches) and batch-appends to the `player-events-historical` datasource. |
 
 ---

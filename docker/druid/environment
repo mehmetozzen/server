@@ -12,7 +12,7 @@ druid_emitter=noop
 
 # Extensions — datasketches REQUIRED for Kaltura hyperUnique aggregations
 # (uniqueUserIds, uniqueSessionId, uniquePercentiles).
-druid_extensions_loadList=["druid-histogram","druid-datasketches","druid-lookups-cached-global","postgresql-metadata-storage"]
+druid_extensions_loadList=["druid-histogram","druid-datasketches","druid-lookups-cached-global","postgresql-metadata-storage","druid-kafka-indexing-service"]
 
 # Coordinator also serves Overlord (task submission) — saves one container
 druid_coordinator_asOverlord_enabled=true

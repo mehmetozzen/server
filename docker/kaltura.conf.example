@@ -50,3 +50,7 @@ LIVE_PUBLISH_TOKEN=
 # Partner that owns automatic VOD recordings of live streams
 # (empty = recording upload off)
 LIVE_PARTNER_ID=
+
+# Real-Time analytics (live viewer stats) — opt-in, ~0.5-0.8GB RAM.
+# Set to kafka:9092 AND run `docker compose --profile realtime up -d` to enable.
+KAFKA_BROKERS=

@@ -23,6 +23,12 @@ const geoip = require('geoip-lite');
 const DRUID_OVERLORD   = process.env.DRUID_OVERLORD || 'http://druid-coordinator:8081';
 const DRUID_BROKER     = process.env.DRUID_BROKER || 'http://druid-broker:8082';
 const DATASOURCE       = 'player-events-historical';
+// Real-Time tab: beacons are also streamed through Kafka into the
+// player-events-realtime datasource (Druid kafka-indexing-service) so the
+// realtime reports see data within seconds. Empty KAFKA_BROKERS = disabled.
+const KAFKA_BROKERS    = (process.env.KAFKA_BROKERS || '').split(',').map((s) => s.trim()).filter(Boolean);
+const REALTIME_DS      = 'player-events-realtime';
+const REALTIME_TOPIC   = 'player-events-realtime';
 const FLUSH_INTERVAL_MS = parseInt(process.env.FLUSH_INTERVAL_MS || '15000', 10);
 const MAX_BUFFER       = parseInt(process.env.MAX_BUFFER || '500', 10);
 const PORT             = parseInt(process.env.PORT || '9999', 10);
@@ -213,6 +219,15 @@ async function buildRow(p, req) {
   let eventDoubleSum1 = 0;
   if (joinTime > 0 && eventType === 'play') { eventDoubleSum1 = joinTime; eventProperties.push('hasJoinTime'); }
 
+  // Realtime engagement state from the player's view-event flags
+  // (kKavaBase $realtime_engagement counts SoundOn+TabFocused variants as
+  // engaged). soundMode/tabMode: 2 = on/focused; screenMode: 1 = fullscreen.
+  const userEngagement =
+    (String(p.soundMode || '') === '2' ? 'SoundOn' : 'SoundOff') +
+    (String(p.tabMode || '') === '2' ? 'TabFocused' : 'TabNotFocused') +
+    (String(p.screenMode || '') === '1' ? 'FullScreen'
+      : (String(p.screenMode || '') === '0' ? 'FullScreenOff' : ''));
+
   return {
     __time: new Date().toISOString(),
     // ── dimensions ──
@@ -239,6 +254,7 @@ async function buildRow(p, req) {
     position: String(Math.round(position)),
     percentiles: String(percentile),            // 0-100 → engagement heatmap
     eventProperties,
+    userEngagement,                             // realtime engaged-users metric
     // ── HLL sketch inputs (consumed by hyperUnique aggregators) ──
     _userId: userKey,
     _sessionId: sessionId,
@@ -262,6 +278,10 @@ const DIMENSIONS = [
   'playbackContext', 'position', 'percentiles',
   { type: 'string', name: 'eventProperties', multiValueHandling: 'ARRAY' },
 ];
+
+// Realtime rows carry the same columns plus the engagement state the
+// realtime-only metrics (view_unique_engaged_users) filter on.
+const REALTIME_DIMENSIONS = [...DIMENSIONS, 'userEngagement'];
 
 const METRICS = [
   { type: 'count', name: 'count' },
@@ -613,39 +633,307 @@ async function pollUsage() {
   }
 }
 
+// ── Real-Time streaming (Kafka → Druid kafka-indexing-service) ───────────────
+// The Real-Time tab (kKavaRealtimeReports) queries player-events-realtime with
+// 30s cache — minute-latency batch tasks cannot feed it. Each beacon is also
+// produced to a Kafka topic that a Druid supervisor consumes within seconds.
+// The realtime row differs from the historical one in eventType naming only:
+// beacon 99 is 'viewPeriod' in historical and 'view' in realtime (kKavaBase
+// EVENT_TYPE_VIEW vs EVENT_TYPE_VIEW_PERIOD).
+let kafkaProducer = null;
+
+async function startKafka() {
+  const { Kafka } = require('kafkajs');
+  const kafka = new Kafka({ clientId: 'kaltura-analytics-receiver', brokers: KAFKA_BROKERS, retry: { retries: 8 } });
+  const producer = kafka.producer({ allowAutoTopicCreation: true });
+  await producer.connect();
+  kafkaProducer = producer;
+  console.log(`[receiver] kafka connected (${KAFKA_BROKERS.join(',')}) → topic ${REALTIME_TOPIC}`);
+}
+
+function publishRealtime(row) {
+  if (!kafkaProducer) return;
+  const rt = { ...row, eventType: row.eventType === 'viewPeriod' ? 'view' : row.eventType };
+  kafkaProducer.send({ topic: REALTIME_TOPIC, messages: [{ value: JSON.stringify(rt) }] })
+    .catch((e) => console.error(`[receiver] kafka send: ${e.message}`));
+}
+
+// Submit the Druid kafka supervisor (idempotent — same spec re-submission is a
+// no-op) and a short retention rule so the realtime datasource stays small:
+// the Real-Time tab only ever queries the last hours.
+function submitRealtimeSupervisor() {
+  const spec = {
+    type: 'kafka',
+    spec: {
+      dataSchema: {
+        dataSource: REALTIME_DS,
+        timestampSpec: { column: '__time', format: 'iso' },
+        dimensionsSpec: { dimensions: REALTIME_DIMENSIONS },
+        metricsSpec: METRICS,
+        granularitySpec: { type: 'uniform', segmentGranularity: 'HOUR', queryGranularity: 'NONE', rollup: false },
+      },
+      ioConfig: {
+        topic: REALTIME_TOPIC,
+        inputFormat: { type: 'json' },
+        consumerProperties: { 'bootstrap.servers': KAFKA_BROKERS.join(',') },
+        taskCount: 1, replicas: 1, taskDuration: 'PT1H',
+        useEarliestOffset: false,
+      },
+      tuningConfig: { type: 'kafka', maxRowsInMemory: 25000 },
+    },
+  };
+  const post = (path, body, label) => new Promise((resolve) => {
+    const payload = JSON.stringify(body);
+    const u = new URL(DRUID_OVERLORD + path);
+    const r = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
+      (res) => { let d = ''; res.on('data', (c) => (d += c));
+        res.on('end', () => {
+          if (res.statusCode >= 300) console.error(`[receiver] ${label} HTTP ${res.statusCode}: ${d.slice(0, 200)}`);
+          else console.log(`[receiver] ${label} ok`);
+          resolve();
+        }); });
+    r.on('error', (e) => { console.error(`[receiver] ${label}: ${e.message}`); resolve(); });
+    r.write(payload); r.end();
+  });
+  return post('/druid/indexer/v1/supervisor', spec, 'realtime supervisor')
+    .then(() => post(`/druid/coordinator/v1/rules/${REALTIME_DS}`,
+      [{ type: 'loadByPeriod', period: 'P2D', includeFuture: true, tieredReplicants: { _default_tier: 1 } },
+       { type: 'dropForever' }], 'realtime retention rules'));
+}
+
+// ── Native live orchestration bridge ──────────────────────────────────────────
+// "Broadcasting Now" (Real-Time tab) and the KMC "Live" badge key off the
+// entry's isLive flag, which only liveStream.registerMediaServer sets. When an
+// encoder starts/stops publishing we bridge nginx-rtmp into that native
+// lifecycle: find the Manual Live Stream entry whose hls_stream_url points at
+// the stream and register/unregister this host as its media server. The server
+// node auto-registers through serverNode.reportStatus on first use — the same
+// path a real Kaltura media server (Wowza) uses.
+const https = require('https');
+const WWW_HOST       = process.env.WWW_HOST || 'localhost';
+const LIVE_HOSTNAME  = process.env.LIVE_RTMP_HOSTNAME || 'live-rtmp';
+// The serverNode/registerMediaServer actions are permissioned to the Media
+// partner (-5, MEDIA_SERVER_BASE) — the identity real media servers (Wowza)
+// authenticate as; a regular partner admin KS gets SERVICE_FORBIDDEN.
+const MEDIA_SERVER_PARTNER = -5;
+const activeStreams  = new Map();   // stream name -> { entryId, partnerId }
+const partnerKsCache = new Map();   // partnerId -> { ks, at }
+
+function kalturaApi(params) {
+  return new Promise((resolve, reject) => {
+    const qs = new URLSearchParams({ format: '1', ...params }).toString();
+    const req = https.request({
+      host: 'kaltura', port: 443, path: '/api_v3/index.php', method: 'POST',
+      headers: { Host: WWW_HOST, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(qs) },
+      rejectUnauthorized: false, servername: WWW_HOST,   // self-signed certs in dev
+    }, (res) => {
+      let d = ''; res.on('data', (c) => (d += c));
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(d);
+          if (j && typeof j === 'object' && j.code && j.message) {
+            return reject(new Error(`${params.service}.${params.action}: ${j.message}`));
+          }
+          resolve(j);
+        } catch { resolve(d); }
+      });
+    });
+    req.on('error', reject); req.write(qs); req.end();
+  });
+}
+
+async function partnerKs(partnerId) {
+  const hit = partnerKsCache.get(partnerId);
+  if (hit && Date.now() - hit.at < 20 * 60 * 1000) return hit.ks;
+  const [rows] = await pool.query('SELECT admin_secret FROM partner WHERE id = ?', [partnerId]);
+  if (!rows.length) throw new Error(`partner ${partnerId} not found`);
+  const ks = await kalturaApi({ service: 'session', action: 'start',
+    secret: rows[0].admin_secret, partnerId: String(partnerId), type: '2', expiry: '86400' });
+  partnerKsCache.set(partnerId, { ks, at: Date.now() });
+  return ks;
+}
+
+// Manual live entries keep their playback URL in custom_data; the stream name
+// inside ".../hlsme/<name>.m3u8" is the natural join key with the RTMP publish.
+async function lookupLiveEntry(name) {
+  if (!pool || !/^[A-Za-z0-9_-]+$/.test(name)) return null;
+  // Native (Kaltura Live, source 32): the broadcast map names the stream
+  // "<entryId>_<flavorIndex>" (stream_name_template = {entryId}_%i), so the
+  // entryId is the name minus the trailing _<digits>.
+  const m = name.match(/^(\d+_[A-Za-z0-9]+)_\d+$/);
+  if (m) {
+    const [rows] = await pool.query(
+      'SELECT id, partner_id, custom_data FROM entry WHERE id = ? AND media_type = 201 LIMIT 1', [m[1]]);
+    if (rows.length) {
+      // The broadcast token (?t=) is the entry's streamPassword in custom_data.
+      const pw = /"streamPassword";s:\d+:"([^"]+)"/.exec(rows[0].custom_data || '');
+      return { entryId: String(rows[0].id), partnerId: rows[0].partner_id, native: true,
+        streamPassword: pw ? pw[1] : null };
+    }
+  }
+  // Manual (source 30): matched by its hls_stream_url in custom_data.
+  const [rows] = await pool.query(
+    "SELECT id, partner_id, (custom_data LIKE '%\"configurations\"%') AS hasCfg " +
+    'FROM entry WHERE media_type = 201 AND status = 2 AND custom_data LIKE ? LIMIT 1',
+    [`%hlsme/${name}.m3u8%`]);
+  return rows.length
+    ? { entryId: String(rows[0].id), partnerId: rows[0].partner_id, hasCfg: !!rows[0].hasCfg, native: false }
+    : null;
+}
+
+// isLive (Broadcasting Now / the KMC Live badge) for MANUAL entries works by
+// probing the entry's liveStreamConfigurations — hlsStreamUrl alone is not
+// consulted on that path (LiveStreamEntry::getLiveStreamConfigurations only
+// folds it in for format-specific calls). Backfill the APPLE_HTTP config once;
+// the update also re-saves the entry, which re-indexes isLive into Sphinx.
+async function ensureLiveConfig(name, entry) {
+  const ks = await partnerKs(entry.partnerId);
+  await kalturaApi({ service: 'liveStream', action: 'update', ks, entryId: entry.entryId,
+    'liveStreamEntry:objectType': 'KalturaLiveStreamEntry',
+    'liveStreamEntry:liveStreamConfigurations:0:objectType': 'KalturaLiveStreamConfiguration',
+    'liveStreamEntry:liveStreamConfigurations:0:protocol': 'applehttp',
+    'liveStreamEntry:liveStreamConfigurations:0:url': `https://${WWW_HOST}/hlsme/${name}.m3u8`,
+  });
+}
+
+// Native entries: the live manifest is built from the entry_server_node's
+// `streams` (kLiveStreamParams). With none, playManifest short-circuits to an
+// empty redirect (HTTP 404). A real media server reports the flavors it is
+// broadcasting; for our single-bitrate passthrough we report one (flavorId 1,
+// matching the "<entryId>_1" stream OBS publishes). The Live Packager delivery
+// profile then emits /dc-0/live/hls/.../e/<entryId>/.../index-s1.m3u8, which
+// the live-rtmp container bridges back to the flat HLS files.
+async function setLiveStreams(name, entry) {
+  if (!pool) return;
+  const [rows] = await pool.query(
+    'SELECT id FROM entry_server_node WHERE entry_id = ? AND server_type = 0 LIMIT 1', [entry.entryId]);
+  if (!rows.length) return;
+  const ks = await partnerKs(MEDIA_SERVER_PARTNER);
+  await kalturaApi({ service: 'entryServerNode', action: 'update', ks, id: String(rows[0].id),
+    'entryServerNode:objectType': 'KalturaLiveEntryServerNode',
+    'entryServerNode:streams:0:objectType': 'KalturaLiveStreamParams',
+    'entryServerNode:streams:0:flavorId': '1',
+    'entryServerNode:streams:0:bitrate': '1000000',
+    'entryServerNode:streams:0:width': '1280',
+    'entryServerNode:streams:0:height': '720',
+    'entryServerNode:streams:0:codec': 'avc1',
+  });
+}
+
+// Register (or heartbeat-refresh) the entry's live state. Real media servers
+// re-register every minute — Kaltura expires the live status otherwise — so
+// this is called both on publish and from the refresh interval.
+async function registerLive(name, entry) {
+  const ks = await partnerKs(MEDIA_SERVER_PARTNER);
+  await kalturaApi({ service: 'serverNode', action: 'reportStatus', ks, hostName: LIVE_HOSTNAME,
+    'serverNode:objectType': 'KalturaWowzaMediaServerNode',
+    'serverNode:hostName': LIVE_HOSTNAME, 'serverNode:name': LIVE_HOSTNAME });
+  await kalturaApi({ service: 'liveStream', action: 'registerMediaServer', ks,
+    entryId: entry.entryId, hostname: LIVE_HOSTNAME, mediaServerIndex: '0',
+    applicationName: 'kLive', liveEntryStatus: '1', shouldCreateRecordedEntry: '0' });
+  if (entry.native) await setLiveStreams(name, entry);
+}
+
+async function liveBroadcastStarted(name) {
+  const entry = await lookupLiveEntry(name);
+  if (!entry) {
+    console.log(`[receiver] live orchestration: no entry maps to stream "${name}" — create a Manual Live Stream entry with .../hlsme/${name}.m3u8 to appear in Broadcasting Now`);
+    return;
+  }
+  // Native entries derive isLive directly from the entry_server_node status, so
+  // they only need registerMediaServer. Manual entries additionally need the
+  // liveStreamConfigurations backfill so the URL-probe isLive check passes.
+  if (!entry.native && !entry.hasCfg) await ensureLiveConfig(name, entry);
+  await registerLive(name, entry);
+  if (!entry.native) {
+    setTimeout(() => ensureLiveConfig(name, entry)
+      .catch((e) => console.error(`[receiver] live reindex (${name}): ${e.message}`)), 15000).unref();
+  }
+  activeStreams.set(name, entry);
+  console.log(`[receiver] live orchestration: entry ${entry.entryId} is LIVE (stream "${name}", ${entry.native ? 'native' : 'manual'})`);
+}
+
+async function liveBroadcastEnded(name) {
+  const entry = activeStreams.get(name) || await lookupLiveEntry(name);
+  activeStreams.delete(name);
+  if (!entry) return;
+  const ks = await partnerKs(MEDIA_SERVER_PARTNER);
+  await kalturaApi({ service: 'liveStream', action: 'unregisterMediaServer', ks,
+    entryId: entry.entryId, hostname: LIVE_HOSTNAME, mediaServerIndex: '0' });
+  // Touch-update → entry re-save → Sphinx re-probes the (now gone) manifest →
+  // isLive drops and the entry moves to Previous Broadcasts.
+  await ensureLiveConfig(name, entry).catch(() => {});
+  console.log(`[receiver] live orchestration: entry ${entry.entryId} stopped (stream "${name}")`);
+}
+
 // ── Live publish auth (nginx-rtmp on_publish callback) ───────────────────────
 // nginx-rtmp POSTs the publish request (form-encoded: app, name, addr + the
-// encoder's query args, e.g. token=...) and refuses the stream unless we
-// answer 2xx. Token is a shared secret (env LIVE_PUBLISH_TOKEN); when unset,
-// publishing is open — fine for dev, set it in production.
+// encoder's query args). We refuse the stream unless we answer 2xx. Auth is
+// per-entry for native entries (the ?t= token is the entry's streamPassword)
+// and a shared secret (LIVE_PUBLISH_TOKEN) for manual streams.
 const LIVE_PUBLISH_TOKEN = process.env.LIVE_PUBLISH_TOKEN || '';
 function handleLivePublish(req, res) {
   let body = '';
   req.on('data', (c) => { body += c; if (body.length > 1e5) req.destroy(); });
-  req.on('end', () => {
+  req.on('end', async () => {
     const p = new URLSearchParams(body);
     const name = p.get('name') || '?';
     const addr = p.get('addr') || '?';
-    if (!LIVE_PUBLISH_TOKEN || p.get('token') === LIVE_PUBLISH_TOKEN) {
-      console.log(`[receiver] live publish ALLOWED: stream=${name} from=${addr}${LIVE_PUBLISH_TOKEN ? '' : ' (no token configured)'}`);
+    // The ?t= token may arrive as a direct field (query on the stream key, e.g.
+    // ffmpeg .../<stream>?t=...) or inside tcurl (query on the app/server URL,
+    // e.g. OBS Server "rtmp://host/kLive?...&t=..."). Check both.
+    const tcurlQs = new URLSearchParams((p.get('tcurl') || '').split('?')[1] || '');
+    const token = p.get('t') || tcurlQs.get('t');
+    const allow = () => {
+      console.log(`[receiver] live publish ALLOWED: stream=${name} from=${addr}`);
       res.writeHead(200); res.end('ok');
-    } else {
-      console.warn(`[receiver] live publish DENIED (bad token): stream=${name} from=${addr}`);
+      liveBroadcastStarted(name).catch((e) => console.error(`[receiver] live orchestration start: ${e.message}`));
+    };
+    const deny = (why) => {
+      console.warn(`[receiver] live publish DENIED (${why}): stream=${name} from=${addr}`);
       res.writeHead(403); res.end('forbidden');
+    };
+    try {
+      const entry = await lookupLiveEntry(name);
+      if (entry && entry.native) {
+        // Native: validate ?t= against the entry's own streamPassword.
+        return (!entry.streamPassword || token === entry.streamPassword) ? allow() : deny('bad stream token');
+      }
+      // Manual / unknown: shared secret (empty = open publishing for dev).
+      return (!LIVE_PUBLISH_TOKEN || p.get('token') === LIVE_PUBLISH_TOKEN) ? allow() : deny('bad token');
+    } catch (e) {
+      console.error(`[receiver] live publish auth error: ${e.message}`);
+      deny('auth error');
     }
+  });
+}
+
+// nginx-rtmp on_publish_done: the encoder disconnected — clear isLive.
+function handleLivePublishDone(req, res) {
+  let body = '';
+  req.on('data', (c) => { body += c; if (body.length > 1e5) req.destroy(); });
+  req.on('end', () => {
+    const name = new URLSearchParams(body).get('name') || '?';
+    res.writeHead(200); res.end('ok');
+    liveBroadcastEnded(name).catch((e) => console.error(`[receiver] live orchestration end: ${e.message}`));
   });
 }
 
 // ── HTTP server ──────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
   if (req.url.startsWith('/health')) { res.writeHead(200); res.end('ok'); return; }
+  if (req.url.startsWith('/live/publish_done')) { handleLivePublishDone(req, res); return; }
   if (req.url.startsWith('/live/publish')) { handleLivePublish(req, res); return; }
   let body = '';
   req.on('data', (c) => { body += c; if (body.length > 1e6) req.destroy(); });
   req.on('end', async () => {
     try {
       const row = await buildRow(parseParams(req, body), req);
-      if (row) { buffer.push(row); if (buffer.length >= MAX_BUFFER) flush(); }
+      if (row) {
+        buffer.push(row); if (buffer.length >= MAX_BUFFER) flush();
+        publishRealtime(row);   // fire-and-forget → Real-Time tab
+      }
     } catch (e) { console.error(`[receiver] handler error: ${e.message}`); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end('1');
@@ -689,6 +977,21 @@ async function start() {
       console.error('[receiver] Druid never reachable for seeding — lifecycle/usage collectors disabled to avoid double-counting');
     }
   }
+  // Real-Time streaming: connect the Kafka producer and (re)submit the Druid
+  // supervisor. Failures only disable the Real-Time tab — the historical batch
+  // path above keeps working regardless.
+  if (KAFKA_BROKERS.length) {
+    startKafka()
+      .then(() => submitRealtimeSupervisor())
+      .catch((e) => console.error(`[receiver] kafka init failed (Real-Time tab disabled): ${e.message}`));
+  }
+  // Heartbeat: re-register active live streams every minute — Kaltura expires
+  // the entry's live status otherwise (real media servers do the same).
+  setInterval(() => {
+    for (const [name, entry] of activeStreams) {
+      registerLive(name, entry).catch((e) => console.error(`[receiver] live heartbeat (${name}): ${e.message}`));
+    }
+  }, 60000).unref();
   server.listen(PORT, () => console.log(`[receiver] listening on :${PORT}, flush ${FLUSH_INTERVAL_MS}ms → ${DRUID_OVERLORD}`));
 }
 start();

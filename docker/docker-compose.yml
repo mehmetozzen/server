@@ -209,6 +209,41 @@ services:
     ports:
       - "127.0.0.1:8888:8888"   # host-only web console: reach it via SSH tunnel, never the public internet
 
+  # ── Kafka (KRaft, single node) — Real-Time analytics streaming (OPT-IN) ─────
+  # Feeds ONLY the Real-Time tab's live viewer stats (player-events-realtime).
+  # Everything else — Audience/Engagement/Contributors/Usage and the live
+  # "Broadcasting Now" list — works without it. Costs ~0.5-0.8 GB RAM (broker +
+  # the Druid supervisor task), so it is gated behind the "realtime" profile and
+  # does NOT start by default. To enable: set KAFKA_BROKERS=kafka:9092 (in
+  # kaltura.conf) and run `docker compose --profile realtime up -d`.
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: kaltura_kafka
+    profiles: ["realtime"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: "24"   # realtime data is only read for hours
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: "-Xmx256m -Xms128m"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
   # ── Analytics event receiver — ingests player KAVA beacons into Druid ────────
   # Apache proxies /api_v3/index.php?service=analytics&action=trackEvent here.
   # Translates numeric KAVA eventType -> kKavaBase strings and batch-appends to
@@ -222,6 +257,7 @@ services:
     environment:
       DRUID_OVERLORD: http://druid-coordinator:8081
       DRUID_BROKER: http://druid-broker:8082
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-}   # empty = Real-Time streaming OFF (opt-in; set to kafka:9092 to enable)
       FLUSH_INTERVAL_MS: "15000"
       DB1_HOST: mysql
       DB1_PORT: "3306"
@@ -319,6 +355,7 @@ services:
       start_period: 30s
 
 volumes:
+  kafka_data:
   live_recordings:
   mysql_data:
   kaltura_web:

@@ -93,6 +93,8 @@ setup_apache() {
             printf '    ProxyPassReverse /dash/ http://packager:88/dash/\n'
             printf '    ProxyPass /hlsme/ http://live-rtmp:8090/hlsme/\n'
             printf '    ProxyPassReverse /hlsme/ http://live-rtmp:8090/hlsme/\n'
+            printf '    ProxyPass /dc-0/live/ http://live-rtmp:8090/dc-0/live/\n'
+            printf '    ProxyPassReverse /dc-0/live/ http://live-rtmp:8090/dc-0/live/\n'
             printf '</VirtualHost>\n'
         fi
     } > "$CONF_OUT"
@@ -258,6 +260,10 @@ generate_ini_from_template() {
         -e "s|@EXPIRY_IN_SECONDS@|60|g" \
         -e "s|@EXCHANGE_NAME@|kaltura|g" \
         -e "s|@RTMP_URL@|rtmp://$WWW_HOST|g" \
+        -e "s|@PRIMARY_MEDIA_SERVER_HOST@|$WWW_HOST|g" \
+        -e "s|@PRIMARY_MEDIA_SERVER_PORT@|1935|g" \
+        -e "s|@SECONDARY_MEDIA_SERVER_HOST@|$WWW_HOST|g" \
+        -e "s|@SECONDARY_MEDIA_SERVER_PORT@|1935|g" \
         -e "s|@VOD_PACKAGER_HOST@|$WWW_HOST|g" \
         -e "s|@VOD_PACKAGER_PORT@|$SERVICE_PORT|g" \
         -e "s|@VOD_PACKAGER_URL@|$WWW_HOST|g" \
@@ -284,6 +290,17 @@ for TMPL in "$APP_DIR/configurations"/*.template.ini "$APP_DIR/configurations"/*
     [ -f "$TMPL" ] || continue
     generate_ini_from_template "$TMPL"
 done
+
+# ── broadcast.ini: unique per-entry stream names ───────────────────────────────
+# LiveEntry::getStreamName() honors a {entryId} template from the broadcast map;
+# without it every Kaltura-Live entry is named "%i" (shown as "1") and streams
+# collide on the media server. nginx-rtmp also keys its HLS output by stream
+# name, so per-entry uniqueness is required.
+BROADCAST_INI="$APP_DIR/configurations/broadcast.ini"
+if [ -f "$BROADCAST_INI" ] && ! grep -q "stream_name_template" "$BROADCAST_INI"; then
+    sed -i '/^queryParams/a stream_name_template = {entryId}_%i' "$BROADCAST_INI"
+    echo "[kaltura] broadcast.ini: stream_name_template = {entryId}_%i"
+fi
 
 # ── Route KMC NG queries away from ElasticSearch ───────────────────────────────
 # ElasticSearchPlugin::canExecuteFilter consults `filterExecutionTags` in
@@ -684,6 +701,17 @@ fi
 # ── Fix delivery_profile URLs: remove stale :88 port (route through Apache) ───
 mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 kaltura <<SQL 2>/dev/null
 UPDATE delivery_profile SET url = REPLACE(url, ':88/', '/') WHERE url LIKE '%:88/%';
+SQL
+
+# ── LIVE_HLS delivery profile: manual live entries' isLive probe ──────────────
+# Broadcasting Now / the KMC Live badge probe a manual entry's HLS URL through
+# a LIVE_HLS (1001) delivery profile matched by host name. Seed one for our
+# host (the API's hostName property is read-only, hence the direct row).
+mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 kaltura <<SQL 2>/dev/null
+INSERT INTO delivery_profile (partner_id, name, system_name, type, streamer_type, url, host_name, status, created_at, updated_at)
+SELECT 0, 'nginx-rtmp manual live HLS (isLive probe)', 'nginxRtmpLiveHls', 1001, 'applehttp',
+       '${SERVICE_PROTOCOL}://${WWW_HOST}/hlsme', '${WWW_HOST}', 0, NOW(), NOW()
+FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM delivery_profile WHERE type = 1001 AND host_name = '${WWW_HOST}');
 SQL
 
 # ── Widgets: every positive partner needs a _<id> widget for widget sessions ───
