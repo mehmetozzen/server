@@ -8,17 +8,30 @@ TMP_DIR=/opt/kaltura/tmp
 DB_HOST="${DB1_HOST:-mysql}"
 DB_PORT="${DB1_PORT:-3306}"
 DB_USER="${DB1_USER:-kaltura}"
-DB_PASS="${DB1_PASS:-kaltura123}"
+# Credentials are fail-CLOSED: no silent fallbacks. A stack that boots with
+# publicly-known defaults on ports 80/443 is worse than one that refuses to
+# boot — `make config` generates strong values into docker/kaltura.conf.
+DB_PASS="${DB1_PASS:?DB1_PASS must be set in docker/kaltura.conf (run: make -C docker config)}"
 DB_NAME="${DB1_NAME:-kaltura}"
-MYSQL_ROOT_PASS="${MYSQL_ROOT_PASSWORD:-kaltura_root}"
+MYSQL_ROOT_PASS="${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set in docker/kaltura.conf (run: make -C docker config)}"
 TIME_ZONE="${TIME_ZONE:-UTC}"
 SERVICE_PROTOCOL="${PROTOCOL:-http}"
 SERVICE_PORT=$( [ "$SERVICE_PROTOCOL" = "https" ] && echo 443 || echo 80 )
 WWW_HOST="${WWW_HOST:-kaltura.example.com}"
 SERVICE_URL="${SERVICE_URL:-${SERVICE_PROTOCOL}://${WWW_HOST}}"
 ADMIN_EMAIL="${ADMIN_CONSOLE_ADMIN_MAIL:-admin@kaltura.local}"
-ADMIN_PASS="${ADMIN_CONSOLE_PASSWORD:-Admin1234!}"
+ADMIN_PASS="${ADMIN_CONSOLE_PASSWORD:?ADMIN_CONSOLE_PASSWORD must be set in docker/kaltura.conf (run: make -C docker config)}"
 MARKER="$APP_DIR/.kaltura_installed"
+
+# Refuse un-edited placeholders outright; warn on the old known-weak defaults so
+# existing dev setups keep booting but the operator is told, every boot.
+for _cred in DB_PASS MYSQL_ROOT_PASS ADMIN_PASS; do
+    case "${!_cred}" in
+        *CHANGEME*) echo "[kaltura] FATAL: $_cred still contains the CHANGEME placeholder — edit docker/kaltura.conf" >&2; exit 1 ;;
+        kaltura123|kaltura_root|Admin1234!)
+            echo "[kaltura] WARN: $_cred uses a publicly-known default value — change it before exposing this host" >&2 ;;
+    esac
+done
 
 # Vendored-app versions. Sourced from the image ENV (set in the Dockerfile from
 # the matching build ARG); the fallbacks keep the script self-contained. Every
@@ -53,6 +66,9 @@ probe() {
     fi
 }
 
+# ── Outgoing mail: /etc/msmtprc from SMTP_* env (see docker/common/setup-msmtp.sh)
+[ -f /opt/kaltura/setup-msmtp.sh ] && . /opt/kaltura/setup-msmtp.sh
+
 # ── Install local CA into container trust store (mkcert HTTPS support) ────────
 if [ -f /opt/kaltura/certs/rootCA.pem ]; then
     cp /opt/kaltura/certs/rootCA.pem /usr/local/share/ca-certificates/mkcert-rootCA.crt
@@ -67,6 +83,24 @@ setup_apache() {
     local CONF_OUT="/etc/apache2/sites-enabled/000-default.conf"
     local BODY
     BODY=$(sed "s|@WWW_HOST@|$WWW_HOST|g" "$BODY_TMPL")
+    # Media proxy rules must live in whichever vhost serves traffic. With
+    # PROTOCOL=http the :80 vhost is the ONLY one — without these rules all
+    # packaged VOD (/hls/, /dash/) and live (/hlsme/, /dc-0/live/) playback
+    # 404s, because delivery_profile URLs are rewritten to route via Apache.
+    # X-Forwarded-Proto carries the real scheme so the packager's vod_base_url
+    # generates correct absolute segment URLs in both modes.
+    emit_media_proxy() {
+        printf '    ProxyPreserveHost On\n'
+        printf '    RequestHeader set X-Forwarded-Proto "%s"\n' "$SERVICE_PROTOCOL"
+        printf '    ProxyPass /hls/ http://packager:88/hls/\n'
+        printf '    ProxyPassReverse /hls/ http://packager:88/hls/\n'
+        printf '    ProxyPass /dash/ http://packager:88/dash/\n'
+        printf '    ProxyPassReverse /dash/ http://packager:88/dash/\n'
+        printf '    ProxyPass /hlsme/ http://live-rtmp:8090/hlsme/\n'
+        printf '    ProxyPassReverse /hlsme/ http://live-rtmp:8090/hlsme/\n'
+        printf '    ProxyPass /dc-0/live/ http://live-rtmp:8090/dc-0/live/\n'
+        printf '    ProxyPassReverse /dc-0/live/ http://live-rtmp:8090/dc-0/live/\n'
+    }
     {
         printf '<VirtualHost *:80>\n'
         printf '    ServerName %s\n' "$WWW_HOST"
@@ -74,6 +108,7 @@ setup_apache() {
             printf '    Redirect permanent / https://%s/\n' "$WWW_HOST"
         else
             printf '%s\n' "$BODY"
+            emit_media_proxy
         fi
         printf '</VirtualHost>\n'
         if [ "$SERVICE_PROTOCOL" = "https" ]; then
@@ -85,16 +120,7 @@ setup_apache() {
             printf '    SSLCertificateKeyFile %s\n' "${SSL_KEY_FILE:-/opt/kaltura/certs/server.key}"
             [ -n "${SSL_CA_FILE:-}" ] && printf '    SSLCertificateChainFile %s\n' "$SSL_CA_FILE"
             printf '%s\n' "$BODY"
-            printf '    ProxyPreserveHost On\n'
-            printf '    RequestHeader set X-Forwarded-Proto "https"\n'
-            printf '    ProxyPass /hls/ http://packager:88/hls/\n'
-            printf '    ProxyPassReverse /hls/ http://packager:88/hls/\n'
-            printf '    ProxyPass /dash/ http://packager:88/dash/\n'
-            printf '    ProxyPassReverse /dash/ http://packager:88/dash/\n'
-            printf '    ProxyPass /hlsme/ http://live-rtmp:8090/hlsme/\n'
-            printf '    ProxyPassReverse /hlsme/ http://live-rtmp:8090/hlsme/\n'
-            printf '    ProxyPass /dc-0/live/ http://live-rtmp:8090/dc-0/live/\n'
-            printf '    ProxyPassReverse /dc-0/live/ http://live-rtmp:8090/dc-0/live/\n'
+            emit_media_proxy
             printf '</VirtualHost>\n'
         fi
     } > "$CONF_OUT"
@@ -152,9 +178,10 @@ probe "Druid    (druid-broker:8082)"  optional curl -sf http://druid-broker:8082
 # Persisted to disk so .ini files stay consistent if regenerated.
 SECRETS_FILE="$APP_DIR/configurations/.docker_secrets.env"
 if [ ! -f "$SECRETS_FILE" ]; then
+    umask 077
     cat > "$SECRETS_FILE" <<EOF
 DC0_SECRET=$(openssl rand -hex 20)
-APP_REMOTE_ADDR_HEADER_SALT=$(printf '%s' "$SERVICE_URL" | base64 | tr -d '\n=')
+APP_REMOTE_ADDR_HEADER_SALT=$(openssl rand -hex 20)
 DEFAULT_IV_16B=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
 TOKEN=$(openssl rand -hex 20)
 TOKEN_IV=$(openssl rand -hex 8)
@@ -164,8 +191,21 @@ ANALYTICS_SYNC_SECRET=$(openssl rand -hex 20)
 AUTHENTICATION_SECRET=$(openssl rand -hex 20)
 INSTALLATION_UID=$(cat /proc/sys/kernel/random/uuid)
 EOF
+    umask 022
 fi
+chmod 600 "$SECRETS_FILE" 2>/dev/null || true
 . "$SECRETS_FILE"
+
+# Migrate away from the old derived salt: earlier builds set
+# APP_REMOTE_ADDR_HEADER_SALT to base64(SERVICE_URL), which anyone who knows
+# the public hostname can compute — and it authenticates the client-IP
+# override header. If the persisted value matches that derivation, replace it.
+_derived_salt=$(printf '%s' "$SERVICE_URL" | base64 | tr -d '\n=')
+if [ "${APP_REMOTE_ADDR_HEADER_SALT:-}" = "$_derived_salt" ]; then
+    APP_REMOTE_ADDR_HEADER_SALT=$(openssl rand -hex 20)
+    sed -i "s|^APP_REMOTE_ADDR_HEADER_SALT=.*|APP_REMOTE_ADDR_HEADER_SALT=$APP_REMOTE_ADDR_HEADER_SALT|" "$SECRETS_FILE"
+    warn "APP_REMOTE_ADDR_HEADER_SALT was derived from the public URL — regenerated as a random secret"
+fi
 
 # ── Generate Kaltura .ini files from templates ─────────────────────────────────
 # Mirrors what the official RPM installer (kaltura-base-config.sh) does:
@@ -623,6 +663,9 @@ SQL
     # Mark as initialized
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) admin=$ADMIN_EMAIL" > "$MARKER"
     echo "[kaltura] Initialization complete."
+    # Printed ONCE, at install time only — docker logs are routinely collected
+    # and retained, so the password must not be re-emitted on every restart.
+    echo "[kaltura] Admin Console login: $ADMIN_EMAIL (password: as set in docker/kaltura.conf)"
 fi
 
 # ── Create /opt/kaltura/var/run for batch pidfile (batchBase.ini pidFileDir) ──
@@ -633,8 +676,6 @@ chown -R www-data:www-data /opt/kaltura/var 2>/dev/null || true
 echo "[kaltura] Syncing plugin enums..."
 cd "$APP_DIR/deployment/base/scripts"
 php installPlugins.php >> "$LOG_DIR/installPlugins.log" 2>&1
-
-echo "[kaltura] Admin: $ADMIN_EMAIL / $ADMIN_PASS"
 
 # Ensure all web content dirs created during init are writable by www-data
 chown -R www-data:www-data "$WEB_DIR/content" "$WEB_DIR/cache" "$WEB_DIR/tmp" 2>/dev/null || true
@@ -743,7 +784,12 @@ set +e
 DWH_DDL="/opt/kaltura/dwh_ddl"
 DWH_TABLE_COUNT=$(mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 \
     -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='kalturadw'" 2>/dev/null)
-if [ "${DWH_TABLE_COUNT:-0}" -eq 0 ] && [ -d "$DWH_DDL/ddl" ]; then
+# NOTE: the DWH schema has no ETL feeding it in this stack (analytics is
+# Druid-only) — legacy DWH-SQL reports (Admin Console partner usage etc.)
+# query these tables and return empty. Loading the schema keeps them failing
+# soft (empty result) instead of hard (SQL error). Set LOAD_DWH=false to skip
+# the load entirely and save several minutes of first-boot time.
+if [ "${LOAD_DWH:-true}" = "true" ] && [ "${DWH_TABLE_COUNT:-0}" -eq 0 ] && [ -d "$DWH_DDL/ddl" ]; then
     echo "[kaltura] Applying DWH partition date fixup..."
     # Bare metal installer replaces these hardcoded 2013-2015 partition boundary dates
     # with current dates. Without this, MySQL fails creating partitioned tables.
@@ -1023,7 +1069,7 @@ fi
 log "────────────────────────────────────────────────────────────"
 log "Kaltura is ready at ${SERVICE_URL}"
 log "  KMC:            ${SERVICE_URL}/index.php/kmcng"
-log "  Admin Console:  ${SERVICE_URL}/admin_console   (${ADMIN_EMAIL} / ${ADMIN_PASS})"
+log "  Admin Console:  ${SERVICE_URL}/admin_console   (${ADMIN_EMAIL})"
 log "────────────────────────────────────────────────────────────"
 
 wait "$APACHE_PID"

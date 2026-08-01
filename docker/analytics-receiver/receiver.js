@@ -31,8 +31,42 @@ const REALTIME_DS      = 'player-events-realtime';
 const REALTIME_TOPIC   = 'player-events-realtime';
 const FLUSH_INTERVAL_MS = parseInt(process.env.FLUSH_INTERVAL_MS || '15000', 10);
 const MAX_BUFFER       = parseInt(process.env.MAX_BUFFER || '500', 10);
+// Hard ceiling on events retained across failed flushes — beyond this the
+// OLDEST events are dropped (logged). Without a cap, a long Druid outage (or
+// `make core-up`, which runs no Druid at all) grows the buffer until OOM.
+const MAX_RETAINED     = parseInt(process.env.MAX_RETAINED || '50000', 10);
 const PORT             = parseInt(process.env.PORT || '9999', 10);
 const SESSION_TTL_MS   = 30 * 60 * 1000;     // forget idle sessions after 30 min
+// Bounds on state keyed by CLIENT-CONTROLLED input (entryId, sessionId,
+// eventIndex). The beacon endpoint is public; without caps a scanner can grow
+// these maps without limit. FIFO eviction (Map preserves insertion order).
+const MAX_ENTRY_CACHE  = 10000;
+const MAX_SESSIONS     = 20000;
+const MAX_SEEN_PER_SESSION = 5000;
+// Per-IP beacon rate limit (sliding 60s window). Generous for real players
+// (~6 beacons/min steady state), tight enough to blunt poisoning/DoS loops.
+const RATE_LIMIT_PER_MIN = parseInt(process.env.RATE_LIMIT_PER_MIN || '600', 10);
+
+// ── Live auth config ─────────────────────────────────────────────────────────
+// LIVE_PUBLISH_TOKEN: shared secret for manual live streams. FAIL-CLOSED: when
+// neither a per-entry streamPassword nor this token is configured, publishing
+// is REFUSED unless LIVE_ALLOW_ANON_PUBLISH=1 explicitly opts into open dev mode.
+const LIVE_PUBLISH_TOKEN      = process.env.LIVE_PUBLISH_TOKEN || '';
+const LIVE_ALLOW_ANON_PUBLISH = process.env.LIVE_ALLOW_ANON_PUBLISH === '1';
+// LIVE_CB_SECRET: shared secret between the live-rtmp container and this
+// receiver. When set, /live/publish and /live/publish_done require ?cb=<secret>
+// — otherwise any process on the compose network could kill broadcasts.
+const LIVE_CB_SECRET          = process.env.LIVE_CB_SECRET || '';
+
+// Constant-time string compare (token checks must not leak length/prefix).
+const safeEqual = (a, b) => {
+  const ba = Buffer.from(String(a || '')), bb = Buffer.from(String(b || ''));
+  return ba.length === bb.length && ba.length > 0 && crypto.timingSafeEqual(ba, bb);
+};
+// Clamp client-supplied strings before they become Druid dimension values —
+// a 1 MB dimension value or unbounded cardinality is a storage/DoS primitive.
+const clamp = (v, max = 256) => String(v == null ? '' : v).slice(0, max);
+const PLAYBACK_TYPES = new Set(['vod', 'live', 'dvr', 'offline']);
 // One view-period delta is normally ~10s; allow larger gaps (backgrounded tab,
 // missed heartbeats) but reject clearly-corrupt jumps so a cumulative reset or
 // garbage value cannot inflate Minutes Viewed.
@@ -99,13 +133,19 @@ async function enrichEntry(entryId) {
   // and 0% completion. Re-query provisional (0-duration) entries, but at most
   // once a minute so genuinely duration-less entries (images/live) don't hammer the DB.
   if (cached && (cached.durationSec > 0 || Date.now() - cached.fetchedAt < 60000)) return cached;
-  let meta = { ownerId: '', mediaType: 'VIDEO', durationSec: 0, categories: [], fetchedAt: Date.now() };
+  // dbChecked=true means the DB answered: partnerId is authoritative (null =
+  // entry does not exist) and buildRow can enforce beacon partner/entry
+  // consistency. On DB errors dbChecked stays false → validation is skipped
+  // rather than dropping legitimate traffic.
+  let meta = { ownerId: '', partnerId: null, dbChecked: false, mediaType: 'VIDEO', durationSec: 0, categories: [], fetchedAt: Date.now() };
   if (pool) {
     try {
       const [rows] = await pool.query(
-        'SELECT puser_id, media_type, length_in_msecs FROM entry WHERE id = ? LIMIT 1', [entryId]);
+        'SELECT puser_id, partner_id, media_type, length_in_msecs FROM entry WHERE id = ? LIMIT 1', [entryId]);
+      meta.dbChecked = true;
       if (rows.length) {
         meta.ownerId = String(rows[0].puser_id || '');
+        meta.partnerId = String(rows[0].partner_id);
         meta.mediaType = MEDIA_TYPE_MAP[rows[0].media_type] || 'VIDEO';
         meta.durationSec = Math.round((rows[0].length_in_msecs || 0) / 1000);
       }
@@ -117,6 +157,7 @@ async function enrichEntry(entryId) {
       console.error(`[receiver] entry enrich error (${entryId}): ${e.message}`);
     }
   }
+  if (entryCache.size >= MAX_ENTRY_CACHE) entryCache.delete(entryCache.keys().next().value);
   entryCache.set(entryId, meta);
   return meta;
 }
@@ -125,7 +166,11 @@ async function enrichEntry(entryId) {
 const sessions = new Map(); // sessionId -> { lastSeen, lastPlayTime, maxPct, seen:Set }
 function sessionState(id) {
   let s = sessions.get(id);
-  if (!s) { s = { lastSeen: Date.now(), lastPlayTime: 0, maxPct: 0, seen: new Set() }; sessions.set(id, s); }
+  if (!s) {
+    if (sessions.size >= MAX_SESSIONS) sessions.delete(sessions.keys().next().value);
+    s = { lastSeen: Date.now(), lastPlayTime: 0, maxPct: 0, seen: new Set() };
+    sessions.set(id, s);
+  }
   s.lastSeen = Date.now();
   return s;
 }
@@ -136,7 +181,10 @@ setInterval(() => {
 
 function parseParams(req, body) {
   const url = new URL(req.url, 'http://localhost');
-  const params = {};
+  // Null prototype: a "__proto__" key in the beacon must not reach the object's
+  // prototype chain (it would otherwise let a client smuggle values past
+  // own-property checks).
+  const params = Object.create(null);
   for (const [k, v] of url.searchParams) params[k] = v;
   if (body) {
     const ct = (req.headers['content-type'] || '').toLowerCase();
@@ -158,28 +206,41 @@ async function buildRow(p, req) {
   if (!eventType) return null;
   const partnerId = String(p.partnerId || p.partner_id || '');
   const entryId = String(p.entryId || p.entry_id || '');
-  if (!partnerId || !entryId) return null;
+  // Shape validation before anything touches the DB or Druid: Kaltura partner
+  // ids are numeric, entry ids are short alphanumerics like "0_x1y2z3ab".
+  if (!/^\d{1,10}$/.test(partnerId) || !/^[A-Za-z0-9_-]{1,32}$/.test(entryId)) return null;
 
-  const sessionId = String(p.sessionId || p.playbackSessionId || '');
-  const eventIndex = String(p.eventIndex || '');
+  const sessionId = clamp(p.sessionId || p.playbackSessionId || '', 64);
+  const eventIndex = clamp(p.eventIndex || '', 32);
   const session = sessionId ? sessionState(sessionId) : null;
 
   // Dedup: same (eventType,eventIndex) within a session is a retransmit.
+  // Bounded: past the cap we stop deduping (worst case a duplicate row) rather
+  // than letting a hostile client grow the Set without limit.
   if (session && eventIndex) {
     const key = eventType + ':' + eventIndex;
     if (session.seen.has(key)) return null;
-    session.seen.add(key);
+    if (session.seen.size < MAX_SEEN_PER_SESSION) session.seen.add(key);
   }
 
   const uaRaw = req.headers['user-agent'] || '';
   const ua = parseUA(uaRaw);
-  const clientIp = String((req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+  // X-Forwarded-For: take the LAST element. Apache APPENDS the true peer IP to
+  // any client-supplied XFF, so the first element is attacker-controlled (geo
+  // and unique-viewer spoofing); the last is what Apache actually saw.
+  const xff = String(req.headers['x-forwarded-for'] || '');
+  const clientIp = String((xff ? xff.split(',').pop().trim() : '')
     || req.socket.remoteAddress || '');
   // Unique viewer identity: logged-in user when present, else an IP+UA
   // fingerprint so a page reload counts as the SAME viewer (not a new one).
   const userKey = String(p.userId || p.kuserId || (clientIp + '|' + uaRaw));
 
   const meta = await enrichEntry(entryId);
+  // Partner/entry consistency: when the DB answered, reject beacons for
+  // nonexistent entries and beacons whose partnerId does not own the entry —
+  // otherwise anyone can poison ANY partner's analytics (including stamping
+  // another tenant's owner/categories onto forged rows).
+  if (meta.dbChecked && meta.partnerId !== partnerId) return null;
   const geo = geoip.lookup(clientIp) || null;
   const position = num(p.position, 0);
 
@@ -235,7 +296,7 @@ async function buildRow(p, req) {
     kuserId: userKey ? md5(userKey) : '',
     entryKuserId: meta.ownerId,                 // entry owner → Contributors
     mediaType: meta.mediaType,                  // real media type from the entry
-    playbackType: String(p.playbackType || 'vod'),
+    playbackType: PLAYBACK_TYPES.has(String(p.playbackType)) ? String(p.playbackType) : 'vod',
     categories: meta.categories,                // multi-value
     'location.country': geo ? geo.country : '',
     'location.region':  geo ? (geo.region || '') : '',
@@ -245,12 +306,12 @@ async function buildRow(p, req) {
     'userAgent.operatingSystem': ua.os,
     'userAgent.operatingSystemFamily': ua.osFamily,
     'userAgent.device': ua.device,
-    'urlParts.domain': domainFromReferrer(p.referrer),
-    application: String(p.application || ''),
-    applicationVer: String(p.clientVer || p.applicationVer || ''),
-    playerVersion: String(p.clientTag || p.playerVersion || ''),
-    uiConfId: String(p.uiConfId || ''),
-    playbackContext: String(p.playbackContext || ''),
+    'urlParts.domain': clamp(domainFromReferrer(p.referrer)),
+    application: clamp(p.application || ''),
+    applicationVer: clamp(p.clientVer || p.applicationVer || '', 64),
+    playerVersion: clamp(p.clientTag || p.playerVersion || '', 64),
+    uiConfId: String(parseInt(p.uiConfId, 10) || ''),
+    playbackContext: clamp(p.playbackContext || ''),
     position: String(Math.round(position)),
     percentiles: String(percentile),            // 0-100 → engagement heatmap
     eventProperties,
@@ -324,17 +385,28 @@ function flush() {
   };
   const payload = JSON.stringify(task);
   const u = new URL(DRUID_OVERLORD + '/druid/indexer/v1/task');
+  // On ANY failure — socket error or non-2xx (overlord restarting, task queue
+  // full) — put the events back, capped at MAX_RETAINED with drop-oldest, so a
+  // Druid outage neither loses a whole batch silently nor grows the heap
+  // without bound.
+  const rebuffer = (why) => {
+    const merged = events.concat(buffer);
+    const dropped = Math.max(0, merged.length - MAX_RETAINED);
+    buffer = merged.slice(0, MAX_RETAINED);
+    console.error(`[receiver] ingest failed (${why}); re-buffered ${events.length}` +
+      (dropped ? `, DROPPED ${dropped} oldest (MAX_RETAINED=${MAX_RETAINED})` : ''));
+  };
   const r = http.request({
     hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
   }, (res) => {
     let d = ''; res.on('data', (c) => (d += c));
     res.on('end', () => {
-      if (res.statusCode >= 300) console.error(`[receiver] ingest HTTP ${res.statusCode}: ${d}`);
+      if (res.statusCode >= 300) rebuffer(`HTTP ${res.statusCode}: ${d.slice(0, 200)}`);
       else console.log(`[receiver] ingested ${events.length} events`);
     });
   });
-  r.on('error', (e) => { console.error(`[receiver] ingest error: ${e.message}; re-buffering ${events.length}`); buffer = events.concat(buffer); });
+  r.on('error', (e) => rebuffer(e.message));
   r.write(payload); r.end();
 }
 
@@ -457,8 +529,13 @@ function buildLifecycleTask(events) {
 
 // Poll the entry table: emit physicalAdd for new entries (once their duration is
 // known) and physicalDelete for entries that have since been deleted.
+let lifecyclePollBusy = false;
 async function pollEntryLifecycle() {
-  if (!pool) return;
+  if (!pool || lifecyclePollBusy) return;   // no overlap: a slow poll must not double-emit
+  lifecyclePollBusy = true;
+  try { await pollEntryLifecycleInner(); } finally { lifecyclePollBusy = false; }
+}
+async function pollEntryLifecycleInner() {
   let rows;
   try {
     [rows] = await pool.query(
@@ -557,8 +634,13 @@ async function seedUsage() {
 
 // Poll flavor_asset for storage (net bytes per ready entry) and transcoding
 // (per non-original flavor) usage, and ingest the new rows.
+let usagePollBusy = false;
 async function pollUsage() {
-  if (!pool) return;
+  if (!pool || usagePollBusy) return;   // no overlap: a slow poll must not double-emit
+  usagePollBusy = true;
+  try { await pollUsageInner(); } finally { usagePollBusy = false; }
+}
+async function pollUsageInner() {
 
   // ── storage-usage: one signed `size` row per entry ─────────────────────────
   let entries;
@@ -878,19 +960,35 @@ async function liveBroadcastEnded(name) {
 // encoder's query args). We refuse the stream unless we answer 2xx. Auth is
 // per-entry for native entries (the ?t= token is the entry's streamPassword)
 // and a shared secret (LIVE_PUBLISH_TOKEN) for manual streams.
-const LIVE_PUBLISH_TOKEN = process.env.LIVE_PUBLISH_TOKEN || '';
+//
+// FAIL-CLOSED: when no secret is configured for the matched path, publishing
+// is refused. Set LIVE_ALLOW_ANON_PUBLISH=1 to explicitly opt into open
+// publishing on an isolated dev box.
+
+// The callback endpoints themselves are guarded by LIVE_CB_SECRET (?cb= on the
+// notify URL, templated into live-rtmp's nginx.conf) so that only the RTMP
+// container — not any process on the compose network — can drive live state.
+function cbAuthorized(req) {
+  if (!LIVE_CB_SECRET) return true;   // not configured → no gate (documented)
+  const q = new URL(req.url, 'http://localhost').searchParams;
+  return safeEqual(q.get('cb'), LIVE_CB_SECRET);
+}
+
 function handleLivePublish(req, res) {
+  if (!cbAuthorized(req)) { res.writeHead(403); res.end('forbidden'); return; }
   let body = '';
   req.on('data', (c) => { body += c; if (body.length > 1e5) req.destroy(); });
   req.on('end', async () => {
     const p = new URLSearchParams(body);
     const name = p.get('name') || '?';
     const addr = p.get('addr') || '?';
-    // The ?t= token may arrive as a direct field (query on the stream key, e.g.
-    // ffmpeg .../<stream>?t=...) or inside tcurl (query on the app/server URL,
-    // e.g. OBS Server "rtmp://host/kLive?...&t=..."). Check both.
+    // The token may arrive as ?t= or ?token=, either as a direct field (query
+    // on the stream key, e.g. ffmpeg .../<stream>?t=...) or inside tcurl
+    // (query on the app/server URL, e.g. OBS Server "rtmp://host/kLive?token=...").
+    // OBS puts Server-field query args in tcurl, so ALL four spots are checked —
+    // documenting ?token= while only reading ?t= locked OBS users out.
     const tcurlQs = new URLSearchParams((p.get('tcurl') || '').split('?')[1] || '');
-    const token = p.get('t') || tcurlQs.get('t');
+    const token = p.get('t') || p.get('token') || tcurlQs.get('t') || tcurlQs.get('token');
     const allow = () => {
       console.log(`[receiver] live publish ALLOWED: stream=${name} from=${addr}`);
       res.writeHead(200); res.end('ok');
@@ -903,11 +1001,13 @@ function handleLivePublish(req, res) {
     try {
       const entry = await lookupLiveEntry(name);
       if (entry && entry.native) {
-        // Native: validate ?t= against the entry's own streamPassword.
-        return (!entry.streamPassword || token === entry.streamPassword) ? allow() : deny('bad stream token');
+        // Native: validate against the entry's own streamPassword.
+        if (entry.streamPassword) return safeEqual(token, entry.streamPassword) ? allow() : deny('bad stream token');
+        return LIVE_ALLOW_ANON_PUBLISH ? allow() : deny('entry has no streamPassword and LIVE_ALLOW_ANON_PUBLISH is not set');
       }
-      // Manual / unknown: shared secret (empty = open publishing for dev).
-      return (!LIVE_PUBLISH_TOKEN || p.get('token') === LIVE_PUBLISH_TOKEN) ? allow() : deny('bad token');
+      // Manual / unknown: shared secret.
+      if (LIVE_PUBLISH_TOKEN) return safeEqual(token, LIVE_PUBLISH_TOKEN) ? allow() : deny('bad token');
+      return LIVE_ALLOW_ANON_PUBLISH ? allow() : deny('no LIVE_PUBLISH_TOKEN configured (set it in kaltura.conf, or LIVE_ALLOW_ANON_PUBLISH=1 for open dev mode)');
     } catch (e) {
       console.error(`[receiver] live publish auth error: ${e.message}`);
       deny('auth error');
@@ -917,6 +1017,7 @@ function handleLivePublish(req, res) {
 
 // nginx-rtmp on_publish_done: the encoder disconnected — clear isLive.
 function handleLivePublishDone(req, res) {
+  if (!cbAuthorized(req)) { res.writeHead(403); res.end('forbidden'); return; }
   let body = '';
   req.on('data', (c) => { body += c; if (body.length > 1e5) req.destroy(); });
   req.on('end', () => {
@@ -926,11 +1027,71 @@ function handleLivePublishDone(req, res) {
   });
 }
 
+// ── entry.plays / entry.views sync (KMC per-entry counters) ──────────────────
+// Bare metal runs configurations/cron/kava.template → kava_plays_views_sync.sh,
+// which writes Druid play/impression counts back into the entry table; that is
+// what the KMC entry list and the public API expose as Plays/Views. No cron was
+// ported, so the counters stayed 0 forever even though the analytics tab had
+// data. Same semantics here: plays = 'play' events, views = 'playerImpression'.
+const PLAYS_SYNC_MS = parseInt(process.env.PLAYS_SYNC_MS || '3600000', 10); // hourly
+async function syncPlaysViews() {
+  if (!pool) return;
+  const rows = await druidQuery({
+    queryType: 'groupBy', dataSource: DATASOURCE,
+    intervals: ['2000-01-01T00:00:00Z/2100-01-01T00:00:00Z'], granularity: 'all',
+    filter: { type: 'in', dimension: 'eventType', values: ['play', 'playerImpression'] },
+    dimensions: ['entryId', 'eventType'],
+    aggregations: [{ type: 'longSum', name: 'c', fieldName: 'count' }],
+  });
+  const counts = new Map(); // entryId -> { plays, views }
+  for (const r of rows) {
+    const e = counts.get(r.event.entryId) || { plays: 0, views: 0 };
+    if (r.event.eventType === 'play') e.plays = r.event.c;
+    else e.views = r.event.c;
+    counts.set(r.event.entryId, e);
+  }
+  let updated = 0;
+  for (const [entryId, c] of counts) {
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(entryId)) continue;
+    try {
+      // updated_at kept stable: a counter refresh is not a content change and
+      // must not bump the entry in "recently updated" orderings.
+      const [r] = await pool.query(
+        'UPDATE entry SET plays = ?, views = ?, updated_at = updated_at ' +
+        'WHERE id = ? AND (plays <> ? OR views <> ?)',
+        [c.plays, c.views, entryId, c.plays, c.views]);
+      if (r.affectedRows) updated++;
+    } catch (e) { console.error(`[receiver] plays/views update (${entryId}): ${e.message}`); }
+  }
+  if (updated) console.log(`[receiver] plays/views sync: ${updated} entries updated`);
+}
+
+// ── Per-IP rate limit (fixed 60s window) ─────────────────────────────────────
+// The beacon endpoint is public (Apache proxies trackEvent here with no KS
+// check — same trust model as Kanalony). This blunts poisoning/DoS loops: each
+// beacon otherwise costs up to 2 MySQL queries + Druid ingestion.
+const rateBuckets = new Map(); // ip -> { n, resetAt }
+function rateLimited(ip) {
+  const now = Date.now();
+  let b = rateBuckets.get(ip);
+  if (!b || now >= b.resetAt) {
+    if (rateBuckets.size >= 20000) rateBuckets.clear(); // cheap bound; windows are short
+    b = { n: 0, resetAt: now + 60000 };
+    rateBuckets.set(ip, b);
+  }
+  return ++b.n > RATE_LIMIT_PER_MIN;
+}
+
 // ── HTTP server ──────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
   if (req.url.startsWith('/health')) { res.writeHead(200); res.end('ok'); return; }
   if (req.url.startsWith('/live/publish_done')) { handleLivePublishDone(req, res); return; }
   if (req.url.startsWith('/live/publish')) { handleLivePublish(req, res); return; }
+  // Rate-limit on the address Apache connected from is useless (always the
+  // proxy) — key on the last XFF hop, the peer Apache actually saw.
+  const xff = String(req.headers['x-forwarded-for'] || '');
+  const beaconIp = (xff ? xff.split(',').pop().trim() : '') || req.socket.remoteAddress || '';
+  if (rateLimited(beaconIp)) { res.writeHead(429); res.end('rate limited'); return; }
   let body = '';
   req.on('data', (c) => { body += c; if (body.length > 1e6) req.destroy(); });
   req.on('end', async () => {
@@ -994,6 +1155,9 @@ async function start() {
       await pollUsage();
       setInterval(() => { pollEntryLifecycle().catch((e) => console.error(`[receiver] entry-lifecycle poll: ${e.message}`)); }, ELIFE_POLL_MS).unref();
       setInterval(() => { pollUsage().catch((e) => console.error(`[receiver] usage poll: ${e.message}`)); }, ELIFE_POLL_MS).unref();
+      // KMC per-entry Plays/Views counters (see syncPlaysViews above).
+      syncPlaysViews().catch((e) => console.error(`[receiver] plays/views sync: ${e.message}`));
+      setInterval(() => { syncPlaysViews().catch((e) => console.error(`[receiver] plays/views sync: ${e.message}`)); }, PLAYS_SYNC_MS).unref();
     } else {
       console.error('[receiver] Druid never reachable for seeding — lifecycle/usage collectors disabled to avoid double-counting');
     }
@@ -1015,4 +1179,19 @@ async function start() {
   }, 60000).unref();
   server.listen(PORT, () => console.log(`[receiver] listening on :${PORT}, flush ${FLUSH_INTERVAL_MS}ms → ${DRUID_OVERLORD}`));
 }
+
+// Graceful shutdown: push the in-memory batch out before exiting, otherwise
+// every `docker compose restart` silently loses up to FLUSH_INTERVAL_MS of
+// beacons. 3s grace for the overlord POST to leave the socket.
+let shuttingDown = false;
+function shutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[receiver] ${sig}: flushing ${buffer.length} buffered events, exiting in 3s`);
+  try { flush(); } catch (e) { console.error(`[receiver] shutdown flush: ${e.message}`); }
+  setTimeout(() => process.exit(0), 3000);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 start();

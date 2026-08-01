@@ -7,12 +7,18 @@ TMP_DIR=/opt/kaltura/tmp
 DB_HOST="${DB1_HOST:-mysql}"
 DB_PORT="${DB1_PORT:-3306}"
 DB_USER="${DB1_USER:-kaltura}"
-DB_PASS="${DB1_PASS:-kaltura123}"
-MYSQL_ROOT_PASS="${MYSQL_ROOT_PASSWORD:-kaltura_root}"
+# Fail-closed credentials — same policy as the app entrypoint.
+DB_PASS="${DB1_PASS:?DB1_PASS must be set in docker/kaltura.conf (run: make -C docker config)}"
+MYSQL_ROOT_PASS="${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set in docker/kaltura.conf (run: make -C docker config)}"
 TIME_ZONE="${TIME_ZONE:-UTC}"
 SERVICE_PROTOCOL="${PROTOCOL:-http}"
 WWW_HOST="${WWW_HOST:-kaltura.example.com}"
 SERVICE_URL="${SERVICE_URL:-${SERVICE_PROTOCOL}://${WWW_HOST}}"
+
+# ── Outgoing mail: /etc/msmtprc from SMTP_* env (see docker/common/setup-msmtp.sh)
+# The Mailer batch worker (KAsyncMailer → PHPMailer → mail() → sendmail_path)
+# runs in THIS container, so the relay config is required here above all.
+[ -f /opt/kaltura/setup-msmtp.sh ] && . /opt/kaltura/setup-msmtp.sh
 
 # ── Install local CA into container trust store (mkcert HTTPS support) ────────
 if [ -f /opt/kaltura/certs/rootCA.pem ]; then
@@ -96,10 +102,29 @@ sed \
     -e "s|@BATCH_SCHEDULER_ID@|$BATCH_SCHEDULER_ID|g" \
     -e "s|@BIN_DIR@|/usr/bin|g" \
     -e "s|@IMAGE_MAGICK_BIN_DIR@|/usr/bin|g" \
+    -e "s|@FORUMS_URLS@|${FORUMS_URL:-https://forum.kaltura.org}|g" \
+    -e "s|@UNSUBSCRIBE_EMAIL_URL@|${SERVICE_URL}/index.php/extwidget/unsubscribe|g" \
     /opt/kaltura/docker/batch/batch.ini.template \
     > "$BATCH_INI"
 # Also clear the derived config cache so workers pick up the fresh secret
 rm -f "$APP_DIR/cache/batch/config.ini" "$APP_DIR/cache/batch/config.log"
+
+# ── Render emails_en.ini (mail subject/body texts) ────────────────────────────
+# Bare metal generates this from emails_en.template.ini at install time; nothing
+# in the containers did, so KAsyncMailer's texts_array stayed null and every
+# outgoing mail had an empty subject and body. Regenerated on each boot (cheap,
+# and picks up SERVICE_URL changes).
+EMAILS_TMPL="$APP_DIR/batch/batches/Mailer/emails_en.template.ini"
+EMAILS_INI="$APP_DIR/batch/batches/Mailer/emails_en.ini"
+if [ -f "$EMAILS_TMPL" ]; then
+    sed \
+        -e "s|@SERVICE_URL@|$SERVICE_URL|g" \
+        -e "s|@FORUMS_URLS@|${FORUMS_URL:-https://forum.kaltura.org}|g" \
+        "$EMAILS_TMPL" > "$EMAILS_INI"
+    echo "[batch] Generated emails_en.ini (mail texts)."
+else
+    echo "[batch] WARN: emails_en.template.ini not found — outgoing mails will have empty bodies" >&2
+fi
 
 # ── Sync plugin enums (idempotent) ─────────────────────────────────────────────
 echo "[batch] Syncing plugin enums..."

@@ -9,7 +9,11 @@ FROM alpine:3.20
 # Alpine packages nginx-mod-rtmp alongside nginx — no source build needed.
 RUN apk add --no-cache nginx nginx-mod-rtmp
 
-COPY docker/live-rtmp/nginx.conf /etc/nginx/nginx.conf
+# The config is a template: the entrypoint substitutes @LIVE_CB_SECRET@ (the
+# receiver-callback shared secret) and @LIVE_CORS_ORIGIN@ at boot.
+COPY docker/live-rtmp/nginx.conf /etc/nginx/nginx.conf.template
+COPY docker/live-rtmp/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # HLS segment dir (official doc layout: /var/tmp/hlsme) + recordings dir
 # (named volume mounts here and inherits the nginx ownership on first use).
@@ -18,4 +22,4 @@ RUN mkdir -p /var/tmp/hlsme /opt/kaltura/live_recordings \
     && chown nginx:nginx /var/tmp/hlsme /opt/kaltura/live_recordings
 
 EXPOSE 1935 8090
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["/entrypoint.sh"]

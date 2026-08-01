@@ -2,11 +2,13 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Copy package.json and install deps (npm install resolves latest @playkit-js/kaltura-player-js)
-COPY docker/bundler/package.json ./
-RUN npm install --omit=dev && npm cache clean --force
+# Reproducible install: exact versions from the committed lockfile. This bundle
+# executes in every end user's browser — never float its version.
+COPY docker/bundler/package.json docker/bundler/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 COPY docker/bundler/server.js ./
+USER node
 
 EXPOSE 8080
 

@@ -5,8 +5,8 @@
   "description": "Kanalony stand-in: enriches player KAVA beacons and ingests them into Druid",
   "main": "receiver.js",
   "dependencies": {
-    "mysql2": "^3.11.5",
-    "geoip-lite": "^1.4.10",
-    "kafkajs": "^2.2.4"
+    "mysql2": "3.11.5",
+    "geoip-lite": "1.4.10",
+    "kafkajs": "2.2.4"
   }
 }

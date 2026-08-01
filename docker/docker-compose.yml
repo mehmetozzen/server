@@ -82,7 +82,7 @@ services:
     depends_on:
       - kaltura
     ports:
-      - "88:88"
+      - "127.0.0.1:88:88"   # host-only: players reach HLS/DASH via the Apache proxy (/hls/, /dash/)
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 15s
@@ -253,7 +253,9 @@ services:
       context: ..
       dockerfile: docker/analytics-receiver/Dockerfile
     container_name: kaltura_analytics_receiver
-    env_file: ./kaltura.conf      # DB1_USER / DB1_PASS for entry enrichment
+    # Explicit env only — NOT env_file: this process parses unauthenticated
+    # player beacons; it must not carry MYSQL_ROOT_PASSWORD or
+    # ADMIN_CONSOLE_PASSWORD in its environment.
     environment:
       DRUID_OVERLORD: http://druid-coordinator:8081
       DRUID_BROKER: http://druid-broker:8082
@@ -262,6 +264,12 @@ services:
       DB1_HOST: mysql
       DB1_PORT: "3306"
       DB1_NAME: kaltura
+      DB1_USER: ${DB1_USER:-kaltura}
+      DB1_PASS: ${DB1_PASS:-}
+      WWW_HOST: ${WWW_HOST:-localhost}
+      LIVE_PUBLISH_TOKEN: ${LIVE_PUBLISH_TOKEN:-}
+      LIVE_CB_SECRET: ${LIVE_CB_SECRET:-}
+      LIVE_ALLOW_ANON_PUBLISH: ${LIVE_ALLOW_ANON_PUBLISH:-}
     depends_on:
       mysql:
         condition: service_healthy   # live orchestration needs the DB from the first on_publish
@@ -276,9 +284,11 @@ services:
   # Kaltura's official FOSS live path: RTMP ingest on the kLive application,
   # HLS out at /hlsme/<stream>.m3u8 (proxied by Apache for same-origin playback).
   # A KMC "Manual Live Stream" entry consumes the HLS URL.
-  # NOTE: port 1935 has no publish auth yet — on production restrict it by
-  # firewall to broadcaster IPs until the auto-provision hook (with token
-  # validation) lands.
+  # Publish auth (fail-closed): on_publish → analytics-receiver /live/publish.
+  # Native entries validate the encoder's token against their streamPassword;
+  # manual streams validate against LIVE_PUBLISH_TOKEN. With NO secret
+  # configured, publishing is REFUSED — set LIVE_ALLOW_ANON_PUBLISH=1 only on
+  # an isolated dev box.
   live-rtmp:
     build:
       context: ..
@@ -287,6 +297,9 @@ services:
     depends_on:
       analytics-receiver:
         condition: service_started   # on_publish auth callback target
+    environment:
+      LIVE_CB_SECRET: ${LIVE_CB_SECRET:-}      # must match the receiver's value
+      LIVE_CORS_ORIGIN: ${LIVE_CORS_ORIGIN:-*} # site origin to block 3rd-party hotlinking
     ports:
       - "1935:1935"   # RTMP ingest — encoders (OBS/ffmpeg) connect here
     volumes:

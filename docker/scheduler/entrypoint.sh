@@ -48,6 +48,22 @@ TMP_DIR=$TMP_DIR
 PHP_BIN=/usr/local/bin/php
 EOF
 
+# ── Secrets for cron jobs ─────────────────────────────────────────────────────
+# /etc/cron.d files are world-readable; DB credentials must not be inlined
+# there. Root-only env file, sourced explicitly by the jobs that need it.
+umask 077
+cat > /etc/kaltura.d/docker.env <<EOF
+export DB1_HOST=${DB1_HOST:-mysql}
+export DB1_PORT=${DB1_PORT:-3306}
+export DB1_NAME=${DB1_NAME:-kaltura}
+export DB1_USER=${DB1_USER:-kaltura}
+export DB1_PASS=${DB1_PASS:-}
+export LIVE_PARTNER_ID=${LIVE_PARTNER_ID:-}
+export WWW_HOST=${WWW_HOST:-localhost}
+export PROTOCOL=${PROTOCOL:-https}
+EOF
+umask 022
+
 # ── logrotate config ───────────────────────────────────────────────────────────
 # Derived from configurations/logrotate/*.template with one container
 # adaptation: apache and the batch daemon hold their log files open and we
@@ -122,25 +138,27 @@ EOF
 cat > /etc/cron.d/kaltura <<EOF
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# cron strips the container env — pass through what the jobs need
+# No MTA in this container; without this cron tries to mail every job's output
+# and logs a delivery failure per run.
+MAILTO=""
+# Non-secret env only — DB credentials live in root-only /etc/kaltura.d/docker.env
 WWW_HOST=${WWW_HOST:-localhost}
 PROTOCOL=${PROTOCOL:-https}
-DB1_HOST=${DB1_HOST:-mysql}
-DB1_PORT=${DB1_PORT:-3306}
-DB1_NAME=${DB1_NAME:-kaltura}
-DB1_USER=${DB1_USER:-kaltura}
-DB1_PASS=${DB1_PASS:-}
-LIVE_PARTNER_ID=${LIVE_PARTNER_ID:-}
 
-# API cache cleanup (configurations/cron/api.template)
-*/15 * * * * www-data $APP_DIR/alpha/crond/kaltura/clear_cache.sh >> $LOG_DIR/cron.log 2>&1
+# API cache cleanup (configurations/cron/api.template).
+# Invoked via `bash <script>`, not directly: the script is mode 0644 in git and
+# the tree is bind-mounted, so it has no exec bit here (bare metal gets it from
+# the RPM installer). Executing it directly fails every run with
+# "bad interpreter: Permission denied" and the API cache is never cleaned.
+*/15 * * * * www-data /bin/bash $APP_DIR/alpha/crond/kaltura/clear_cache.sh >> $LOG_DIR/cron.log 2>&1
 
 # Deleted/old content file cleanup (configurations/cron/cleanup.template)
 */15 * * * * www-data /usr/local/bin/php $APP_DIR/alpha/scripts/batch/deleteOldContent.php --real-run --old-versions --files >> $LOG_DIR/kaltura_cleanup.log 2>&1
 
 # Live recordings → VOD entries (root: the files are written by the nginx
-# user of the live-rtmp container; no-op until LIVE_PARTNER_ID is set)
-* * * * * root /usr/local/bin/php $APP_DIR/docker/scheduler/upload_recordings.php >> $LOG_DIR/live_recordings.log 2>&1
+# user of the live-rtmp container; no-op until LIVE_PARTNER_ID is set).
+# Sources the root-only env file for DB credentials.
+* * * * * root . /etc/kaltura.d/docker.env && /usr/local/bin/php $APP_DIR/docker/scheduler/upload_recordings.php >> $LOG_DIR/live_recordings.log 2>&1
 
 # Log rotation (state lives on the log volume so it survives recreates)
 17 * * * * root /usr/sbin/logrotate -s $LOG_DIR/.logrotate.state /etc/logrotate.d/kaltura >> $LOG_DIR/cron.log 2>&1

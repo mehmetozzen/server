@@ -339,7 +339,7 @@ class KScheduleHelperManager
 	public static function loadStatuses($lastUpdateInterval)
 	{
 		$lastFileUpdateTimeStampPath = self::getLastFileUpdateTimeStampPath();
-		$lastFileUpdateFileContent = file_get_contents($lastFileUpdateTimeStampPath);
+		$lastFileUpdateFileContent = /* PHP8 */(int)file_get_contents($lastFileUpdateTimeStampPath);
 		$currentTimeStamp = time();
 
 		if (($currentTimeStamp - $lastFileUpdateFileContent) < $lastUpdateInterval)

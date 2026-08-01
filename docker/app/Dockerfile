@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y \
     imagemagick \
     ffmpeg \
     libmemcached-dev \
+    msmtp \
+    msmtp-mta \
     && rm -rf /var/lib/apt/lists/*
 
 ARG KMCNG_VERSION=v7.20.0
@@ -141,6 +143,7 @@ RUN a2enmod rewrite expires headers deflate filter proxy proxy_http
 
 COPY docker/app/php.ini /usr/local/etc/php/conf.d/kaltura.ini
 COPY docker/app/apache-kaltura.conf /etc/apache2/kaltura-vhost-body.template
+COPY docker/common/setup-msmtp.sh /opt/kaltura/setup-msmtp.sh
 
 COPY docker/app/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

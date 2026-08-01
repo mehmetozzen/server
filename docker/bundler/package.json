@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "express": "^4.18.0",
-    "@playkit-js/kaltura-player-js": "*"
+    "express": "4.21.2",
+    "@playkit-js/kaltura-player-js": "3.17.82"
   }
 }

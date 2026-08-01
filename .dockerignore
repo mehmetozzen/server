@@ -1,0 +1,12 @@
+# Keep secrets and bulk out of the Docker build context. Every image here
+# builds with context `..` (the repo root) — without this file the daemon
+# receives .git, the local TLS PRIVATE KEYS and the real credentials file on
+# every build, and any future broad COPY would bake them into a layer.
+.git
+.gitignore
+docker/certs/
+docker/kaltura.conf
+**/node_modules
+**/.DS_Store
+cache/
+*.log

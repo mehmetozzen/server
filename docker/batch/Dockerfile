@@ -1,4 +1,9 @@
-FROM mwader/static-ffmpeg:latest AS ffmpeg-source
+# Pinned: `latest` (ffmpeg 8.x) ships libx264 assembly that SIGILLs (exit 132,
+# "Illegal instruction") under Apple Virtualization on Apple Silicon — every
+# transcode fails and entries stay source-only. 7.1 encodes cleanly. Pinning
+# also makes builds reproducible (an ffmpeg major bump can change encoder
+# defaults across every conversion profile).
+FROM mwader/static-ffmpeg:7.1 AS ffmpeg-source
 
 FROM php:8.1-cli
 
@@ -29,6 +34,8 @@ RUN apt-get update && apt-get install -y \
     mediainfo \
     cron \
     logrotate \
+    msmtp \
+    msmtp-mta \
     && rm -rf /var/lib/apt/lists/*
 
 # mwader/static-ffmpeg ships native ARM64 + amd64 static builds, but omits
@@ -74,6 +81,7 @@ RUN ln -s /usr/local/bin/php /usr/bin/php
 RUN mkdir -p /opt/kaltura/bin && ln -sf /usr/bin/mediainfo /opt/kaltura/bin/mediainfo
 
 COPY docker/app/php.ini /usr/local/etc/php/conf.d/kaltura.ini
+COPY docker/common/setup-msmtp.sh /opt/kaltura/setup-msmtp.sh
 COPY docker/batch/batch.ini.template /opt/kaltura/docker/batch/batch.ini.template
 COPY docker/batch/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

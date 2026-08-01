@@ -12,21 +12,32 @@ CONF         := $(MAKEFILE_DIR)/kaltura.conf
 COMPOSE      := docker compose --env-file $(CONF) -f $(MAKEFILE_DIR)/docker-compose.yml
 
 # Core = everything except the Druid analytics stack (for low-RAM hosts).
-CORE_SERVICES  := mysql memcache sphinx bundler kaltura packager batch scheduler live-rtmp
+# analytics-receiver is CORE, not Druid: live-rtmp's on_publish auth callback
+# targets it (fail-closed — without it every publish is refused). Its Druid
+# writes simply queue/drop when Druid is down; live orchestration still works.
+CORE_SERVICES  := mysql memcache sphinx bundler kaltura packager batch scheduler \
+                  live-rtmp analytics-receiver
 DRUID_SERVICES := druid-postgres druid-zookeeper druid-coordinator druid-broker \
-                  druid-historical druid-middlemanager druid-router analytics-receiver
+                  druid-historical druid-middlemanager druid-router
 
 .DEFAULT_GOAL := help
-.PHONY: help config build up core-up start stop restart down destroy reset \
+.PHONY: help config build up core-up realtime-up start stop restart down destroy reset \
         druid-up druid-down logs ps shell mysql
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
-config: ## Create docker/kaltura.conf from the example if it is missing
-	@test -f $(CONF) || { cp $(MAKEFILE_DIR)/kaltura.conf.example $(CONF); \
-		echo "Created docker/kaltura.conf — edit it (domain, passwords, SSL) before 'make up'."; }
+config: ## Create docker/kaltura.conf from the example (generates strong random secrets)
+	@test -f $(CONF) || { \
+		sed \
+			-e "s|^MYSQL_ROOT_PASSWORD=.*|MYSQL_ROOT_PASSWORD=$$(openssl rand -hex 16)|" \
+			-e "s|^DB1_PASS=.*|DB1_PASS=$$(openssl rand -hex 16)|" \
+			-e "s|^ADMIN_CONSOLE_PASSWORD=.*|ADMIN_CONSOLE_PASSWORD=Adm1n_$$(openssl rand -hex 8)|" \
+			-e "s|^LIVE_PUBLISH_TOKEN=.*|LIVE_PUBLISH_TOKEN=$$(openssl rand -hex 16)|" \
+			-e "s|^LIVE_CB_SECRET=.*|LIVE_CB_SECRET=$$(openssl rand -hex 16)|" \
+			$(MAKEFILE_DIR)/kaltura.conf.example > $(CONF); \
+		echo "Created docker/kaltura.conf with random secrets — edit domain/SSL/SMTP before 'make up'."; }
 
 check-config:
 	@test -f $(CONF) || { echo "Missing $(CONF). Run 'make config' and edit it first."; exit 1; }
@@ -38,8 +49,11 @@ build: check-config ## Build all locally-built images (cached layers make this f
 up: check-config ## Start the full stack (Kaltura + Druid analytics)
 	$(COMPOSE) up -d
 
-core-up: check-config ## Start without Druid (low-RAM hosts; analytics disabled)
+core-up: check-config ## Start without Druid (low-RAM hosts; analytics disabled, live still works)
 	$(COMPOSE) up -d $(CORE_SERVICES)
+
+realtime-up: check-config ## Start the full stack + Kafka Real-Time analytics (set KAFKA_BROKERS=kafka:9092 first)
+	$(COMPOSE) --profile realtime up -d
 
 start: ## Start previously-stopped containers
 	$(COMPOSE) start
