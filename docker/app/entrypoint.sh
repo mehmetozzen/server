@@ -379,6 +379,24 @@ if [ -f "$ELASTIC_MAP" ]; then
     sed -i '/= "kmcng"/d' "$ELASTIC_MAP"
 fi
 
+# ── Log level ─────────────────────────────────────────────────────────────────
+# logger.template.ini ships the priority filter COMMENTED OUT, so Kaltura writes
+# every DEBUG line to disk. Measured on an idle test install: ~78% of
+# kaltura_api_v3.log was DEBUG and the file grew 36 MB in 35 minutes — on a real
+# workload that outruns a daily logrotate and fills the disk. Enabling the
+# filter at Zend_Log's INFO level (6) keeps everything except DEBUG.
+#   7 = DEBUG (Kaltura's default, very chatty — use while troubleshooting)
+#   6 = INFO (default here)   5 = NOTICE   4 = WARN   3 = ERR
+LOGGER_INI="$APP_DIR/configurations/logger.ini"
+if [ -f "$LOGGER_INI" ]; then
+    sed -i \
+        -e "s|^;\(writers\.stream\.filters\.priority\.name.*\)|\1|" \
+        -e "s|^;\{0,1\}writers\.stream\.filters\.priority\.priority.*|writers.stream.filters.priority.priority = ${LOG_LEVEL:-6}|" \
+        -e "s|^;\(writers\.stream\.filters\.priority\.operator.*\)|\1|" \
+        "$LOGGER_INI"
+    echo "[kaltura] Log level: ${LOG_LEVEL:-6} ($([ "${LOG_LEVEL:-6}" -ge 7 ] && echo 'DEBUG — verbose' || echo 'DEBUG suppressed'))"
+fi
+
 # ── Generate plugins.ini (registers which plugin classes to load) ──────────────
 # Scanned from plugins/ directory every startup so newly added plugins get picked up.
 echo "[kaltura] Generating plugins.ini..."

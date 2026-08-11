@@ -145,6 +145,31 @@ if docker inspect -f '{{.State.Running}}' kaltura_packager 2>/dev/null | grep -q
         || bad "packager cannot reach the app ($stale connection failures in 15m) — its cached upstream IP is stale; fix: docker compose ... restart packager"
 fi
 
+# ── 3c. Log growth ────────────────────────────────────────────────────────────
+# The disk filler on this stack. Kaltura ships with DEBUG logging enabled and
+# rotation was daily-only: kaltura_api_v3.log grew 36 MB in 35 minutes on an
+# idle install. Both are fixed, so a large file now means the fix is not in
+# effect on this host (old image, LOG_LEVEL raised, scheduler not running).
+if docker inspect -f '{{.State.Running}}' kaltura_app 2>/dev/null | grep -q true; then
+    big=$(docker exec kaltura_app sh -c \
+        'find /opt/kaltura/log -maxdepth 2 -type f -name "*.log" -size +250M 2>/dev/null' | wc -l | tr -d ' ')
+    [ "${big:-0}" -eq 0 ] && ok "no runaway log files (>250MB)" \
+        || { bad "$big log file(s) over 250MB — rotation is not keeping up"
+             docker exec kaltura_app sh -c 'find /opt/kaltura/log -maxdepth 2 -type f -name "*.log" -size +250M -exec ls -lh {} \;' 2>/dev/null | awk '{print "      "$5, $9}'; }
+    lvl=$(docker exec kaltura_app sh -c \
+        "grep -oE '^writers\\.stream\\.filters\\.priority\\.priority *= *[0-9]+' /opt/kaltura/app/configurations/logger.ini 2>/dev/null | grep -oE '[0-9]+\$'" | head -1)
+    if [ -z "$lvl" ]; then
+        wrn "log priority filter not active — Kaltura is writing every DEBUG line (set LOG_LEVEL in kaltura.conf and restart the app)"
+    elif [ "$lvl" -ge 7 ]; then
+        wrn "LOG_LEVEL=$lvl (DEBUG) — fine while troubleshooting, very chatty for day-to-day"
+    else
+        ok "log level $lvl (DEBUG suppressed)"
+    fi
+    docker exec kaltura_scheduler grep -q 'maxsize' /etc/logrotate.d/kaltura 2>/dev/null \
+        && ok "logrotate has a size cap" \
+        || wrn "logrotate is time-based only — a busy day can fill the disk before it runs"
+fi
+
 # ── 4. Transcoding toolchain ──────────────────────────────────────────────────
 # ffmpeg 8.x SIGILLs on libx264 under Apple Virtualization, which failed every
 # transcode while leaving entries stuck at "source only". Verify the binary can

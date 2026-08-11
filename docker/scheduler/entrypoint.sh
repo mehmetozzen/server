@@ -70,6 +70,12 @@ umask 022
 # cannot reload them from this container (the templates assume `service ...
 # reload`), so those logs use copytruncate instead of rename.
 cat > /etc/logrotate.d/kaltura <<EOF
+# maxsize, not just daily: kaltura_api_v3.log measured 36 MB in 35 minutes on an
+# idle install. Daily-only rotation lets a busy day fill the disk before the
+# rotation ever runs; with maxsize the hourly cron rotates as soon as the cap is
+# reached. dateext is deliberately absent — it cannot express more than one
+# rotation per day, and numeric suffixes handle sub-daily rotation correctly.
+#
 # PHP request-scoped logs — every request reopens the file, rename is safe.
 # (configurations/logrotate/kaltura_api.template + kaltura_base.template)
 $LOG_DIR/kaltura_api_v3.log
@@ -78,15 +84,17 @@ $LOG_DIR/kaltura_api_v3_tests.log
 $LOG_DIR/kaltura_prod.log
 $LOG_DIR/kaltura_admin.log
 $LOG_DIR/kaltura_scripts.log
+$LOG_DIR/kaltura_deploy.log
 $LOG_DIR/cron.log
 $LOG_DIR/clear_cache.log
 $LOG_DIR/kaltura_cleanup.log
 $LOG_DIR/live_recordings.log
+$LOG_DIR/msmtp.log
 {
     daily
+    maxsize 200M
     rotate 5
     compress
-    dateext
     missingok
     notifempty
     su www-data www-data
@@ -102,6 +110,7 @@ $LOG_DIR/kaltura_batch.log
 $LOG_DIR/batch/*.log
 {
     daily
+    maxsize 200M
     rotate 5
     compress
     copytruncate

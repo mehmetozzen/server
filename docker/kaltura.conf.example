@@ -47,6 +47,14 @@ ADMIN_CONSOLE_PASSWORD=CHANGEME
 # ── Timezone ──────────────────────────────────────────────────
 TIME_ZONE=UTC
 
+# ── Logging ───────────────────────────────────────────────────
+# Zend_Log priority kept on disk (messages at this level and below).
+# Kaltura ships with the filter disabled, i.e. everything including DEBUG:
+# on an idle install that is ~78% of the volume and 36 MB in 35 minutes.
+#   7 = DEBUG (very chatty — raise to this only while troubleshooting)
+#   6 = INFO (default)   5 = NOTICE   4 = WARN   3 = ERR
+LOG_LEVEL=6
+
 # ── Outgoing e-mail (password reset, invitations, bulk-upload results) ──
 # Without SMTP_HOST all outgoing mail is DISABLED (a WARN is logged at boot).
 # Point it at your relay (e.g. smtp.eu.mailgun.org) or, for dev, at a local
