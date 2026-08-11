@@ -342,8 +342,13 @@ done
 # the install branch fills it then.
 BATCHBASE_INI="$APP_DIR/configurations/batchBase.ini"
 if [ -f "$BATCHBASE_INI" ] && grep -qE '^secret[[:space:]]*=[[:space:]]*$' "$BATCHBASE_INI"; then
+    # `|| true` is required, not cosmetic: on a FRESH install this runs before
+    # the schema is loaded, so the query fails with "Table 'kaltura.partner'
+    # doesn't exist". Under `set -e` a failed command substitution in an
+    # assignment aborts the entrypoint — the app container then crash-loops
+    # before it ever creates the database.
     _bsecret=$(mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 -N \
-        -e "SELECT admin_secret FROM partner WHERE id = -1" "$DB_NAME" 2>/dev/null)
+        -e "SELECT admin_secret FROM partner WHERE id = -1" "$DB_NAME" 2>/dev/null || true)
     if [ -n "$_bsecret" ]; then
         sed -i "s|^secret\([[:space:]]*\)=[[:space:]]*$|secret\1= $_bsecret|" "$BATCHBASE_INI"
         echo "[kaltura] batchBase.ini: restored batch partner secret from the database"
