@@ -50,15 +50,46 @@ for s in "${SCRIPTS[@]}"; do
     # www-data, not root: these scripts write into the shared cache/ tree, and
     # root-owned cache files break every later www-data process (batch workers,
     # cron). Output is captured so a stack trace does not flood the terminal.
-    if out=$(docker exec "$APP_CONTAINER" su -s /bin/bash www-data \
-                -c "cd /opt/kaltura/app/deployment/base/scripts && php $s" 2>&1); then
-        echo "ok"
-    else
+    out=$(docker exec "$APP_CONTAINER" su -s /bin/bash www-data \
+             -c "cd /opt/kaltura/app/deployment/base/scripts && php $s" 2>&1)
+    rc=$?
+    # Exit code alone is not enough: these scripts catch their own exceptions,
+    # write "ERR: Exception ..." to the log and still exit 0. A reindex that
+    # silently indexes nothing is the exact failure this script exists to fix.
+    # "Pending plugin name [rabbitMQ] is not available" is emitted by every
+    # script on this stack (BeaconPlugin / SearchHistoryPlugin want RabbitMQ,
+    # which we deliberately do not run) and does not affect indexing. Filter it
+    # out so the check stays sensitive to errors that DO matter, such as the
+    # "Access denied to kaltura_sphinx_log" that once left the index empty
+    # while every script reported success.
+    real_err=$(echo "$out" | grep -E '\] ERR:|Exception:|PHP Fatal' | grep -v 'Pending plugin name')
+    if [ "$rc" -ne 0 ] || [ -n "$real_err" ]; then
         echo "FAILED"
-        echo "$out" | tail -5 | sed 's/^/      /'
+        echo "$real_err" | head -3 | cut -c1-160 | sed 's/^/      /'
         failed=$((failed + 1))
+    else
+        echo "ok"
     fi
 done
+
+# Report what actually landed in the index. "All scripts ok" with an empty
+# index is not a successful reindex.
+echo
+echo "Index contents:"
+for idx in kaltura_entry kaltura_category kaltura_kuser kaltura_tag; do
+    n=$(docker exec "$SPHINX_CONTAINER" mysql -h 127.0.0.1 -P 9312 -N -B \
+            -e "SELECT COUNT(*) FROM $idx" 2>/dev/null)
+    printf '  %-28s %s rows\n' "$idx" "${n:-?}"
+done
+ENTRIES=$(docker exec "$SPHINX_CONTAINER" mysql -h 127.0.0.1 -P 9312 -N -B \
+              -e "SELECT COUNT(*) FROM kaltura_entry" 2>/dev/null)
+DB_ENTRIES=$(docker exec kaltura_mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" kaltura -N -B -e "SELECT COUNT(*) FROM entry WHERE status <> 3"' 2>/dev/null)
+if [ "${DB_ENTRIES:-0}" -gt 0 ] && [ "${ENTRIES:-0}" -eq 0 ]; then
+    echo
+    echo "reindex: the database holds ${DB_ENTRIES} entries but the index is EMPTY."
+    failed=$((failed + 1))
+fi
 
 echo
 if [ "$failed" -gt 0 ]; then

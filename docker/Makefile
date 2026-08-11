@@ -22,7 +22,7 @@ DRUID_SERVICES := druid-postgres druid-zookeeper druid-coordinator druid-broker 
 
 .DEFAULT_GOAL := help
 .PHONY: help config build up core-up realtime-up start stop restart down destroy reset \
-        druid-up druid-down logs ps shell mysql verify doctor reindex
+        druid-up druid-down logs ps shell mysql verify doctor reindex backup restore
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -97,6 +97,14 @@ doctor: check-config ## Health, permission and configuration diagnostics (read-o
 
 reindex: ## Rebuild all Sphinx search indexes from the database
 	@$(MAKEFILE_DIR)/scripts/reindex.sh
+
+# ── Backup & restore ────────────────────────────────────────────────────────────
+backup: check-config ## Back up databases, media, config and secrets (to ~/kaltura-backups)
+	@KALTURA_CONF=$(CONF) $(MAKEFILE_DIR)/scripts/backup.sh
+
+restore: ## Restore from a backup:  make restore B=~/kaltura-backups/kaltura-...
+	@test -n "$(B)" || { echo "Usage: make -C docker restore B=<backup directory>"; exit 1; }
+	@KALTURA_CONF=$(CONF) $(MAKEFILE_DIR)/scripts/restore.sh "$(B)"
 
 # ── Inspect ─────────────────────────────────────────────────────────────────────
 logs: ## Follow logs; one service with  make logs S=kaltura

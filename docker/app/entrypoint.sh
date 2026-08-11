@@ -1057,6 +1057,38 @@ apache2-foreground &
 APACHE_PID=$!
 trap 'kill -TERM "$APACHE_PID" 2>/dev/null; wait "$APACHE_PID"' TERM INT HUP
 
+# ── Regenerate the PHP client SDKs if they are missing ────────────────────────
+# batch/client/, tests/lib/, admin_console/lib/... are GENERATED from the live
+# API schema, are git-ignored, and were only produced inside the first-install
+# branch. Any situation where the database is already initialised but the
+# working tree is not — a restore, a fresh clone onto an existing database, a
+# `git clean` — therefore skipped generation and left them absent. The batch
+# container then died at bootstrap with
+#   Fatal error: Failed opening required '.../batch/client/KalturaClient.php'
+# on every start, forever, with nothing in its own log because the failure
+# happens before the logger exists. Generation needs a live API, so it runs
+# here, after Apache is up, rather than in the install branch.
+if [ ! -f "$APP_DIR/batch/client/KalturaClient.php" ] || [ ! -f "$APP_DIR/tests/lib/KalturaClient.php" ]; then
+    ( echo "[kaltura] Client SDKs missing — regenerating (batch cannot start without them)..."
+      _t=0
+      until curl -sf --insecure "${SERVICE_URL}/api_v3/?service=system&action=ping" >/dev/null 2>&1; do
+          sleep 3; _t=$(( _t + 1 ))
+          [ "$_t" -gt 60 ] && { warn "API never came up; client SDKs NOT generated — the batch worker will not start"; exit 0; }
+      done
+      mkdir -p "$WEB_DIR/content/clientlibs"
+      php "$APP_DIR/api_v3/generator/generate_xml.php" "$WEB_DIR/content/clientlibs" \
+          >> "$LOG_DIR/generate.log" 2>&1 || warn "generate_xml.php failed (see $LOG_DIR/generate.log)"
+      ( cd /opt/kaltura/clients-generator && php exec.php >> "$LOG_DIR/generate.log" 2>&1 ) \
+          || warn "clients-generator failed (see $LOG_DIR/generate.log)"
+      chown -R www-data:www-data "$APP_DIR/batch/client" "$APP_DIR/tests/lib" 2>/dev/null || true
+      if [ -f "$APP_DIR/batch/client/KalturaClient.php" ]; then
+          echo "[kaltura] Client SDKs generated."
+      else
+          warn "client SDK generation did not produce batch/client/KalturaClient.php — the batch worker will keep restarting"
+      fi
+    ) &
+fi
+
 # Fix html5studio confFiles via API once Apache is fully up.
 # saveConfFileToDisk() silently fails during the temp init Apache phase
 # (missing PHP/Kaltura context). Running after full startup it works correctly.

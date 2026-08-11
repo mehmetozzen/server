@@ -37,7 +37,11 @@ services:
     ports:
       - "127.0.0.1:3306:3306"   # host-only: containers reach MySQL via the `mysql` service name
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      # -h 127.0.0.1 forces TCP. `-h localhost` uses the unix socket, which the
+      # temporary server the image runs during first-time initialisation also
+      # answers — marking the container healthy minutes before it accepts
+      # network connections, so dependents start against a server that vanishes.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
       interval: 10s
       timeout: 5s
       retries: 12

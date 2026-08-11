@@ -112,3 +112,6 @@ docker/certs/*.crt
 
 # Local Docker configuration (contains credentials, never commit)
 docker/kaltura.conf
+
+# Backup safety copies of kaltura.conf made by scripts/restore.sh
+docker/kaltura.conf.before-restore-*

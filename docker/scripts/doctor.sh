@@ -124,6 +124,27 @@ else
     wrn "kaltura_app not running — skipped permission checks"
 fi
 
+# ── 3b. Generated client SDKs and the packager upstream ───────────────────────
+# Two failures that present identically to the user (nothing plays) and leave
+# nothing obvious in a log.
+if docker inspect -f '{{.State.Running}}' kaltura_app 2>/dev/null | grep -q true; then
+    if docker exec kaltura_app test -f /opt/kaltura/app/batch/client/KalturaClient.php 2>/dev/null; then
+        ok "generated client SDK present"
+    else
+        bad "batch/client/KalturaClient.php missing — the batch worker exits 255 at bootstrap and nothing transcodes"
+        info "the app container regenerates it on boot; check: docker logs kaltura_app | grep -i 'client sdk'"
+    fi
+fi
+if docker inspect -f '{{.State.Running}}' kaltura_packager 2>/dev/null | grep -q true; then
+    # nginx resolves the app hostname once, at config load. Recreating the app
+    # container leaves the packager talking to an IP nobody answers on, and
+    # every segment request fails while the container still looks healthy.
+    stale=$(docker logs --since 15m kaltura_packager 2>&1 | grep -c "connect() failed" || true)
+    [ -z "$stale" ] && stale=0
+    [ "$stale" -eq 0 ] && ok "packager reaches the app upstream" \
+        || bad "packager cannot reach the app ($stale connection failures in 15m) — its cached upstream IP is stale; fix: docker compose ... restart packager"
+fi
+
 # ── 4. Transcoding toolchain ──────────────────────────────────────────────────
 # ffmpeg 8.x SIGILLs on libx264 under Apple Virtualization, which failed every
 # transcode while leaving entries stuck at "source only". Verify the binary can
