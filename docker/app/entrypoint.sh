@@ -677,8 +677,19 @@ echo "[kaltura] Syncing plugin enums..."
 cd "$APP_DIR/deployment/base/scripts"
 php installPlugins.php >> "$LOG_DIR/installPlugins.log" 2>&1
 
-# Ensure all web content dirs created during init are writable by www-data
-chown -R www-data:www-data "$WEB_DIR/content" "$WEB_DIR/cache" "$WEB_DIR/tmp" 2>/dev/null || true
+# Re-assert ownership on everything the root-run steps above touched.
+# installPlugins.php (and the init scripts before it) run as ROOT and write
+# into directories shared with the batch/scheduler containers, which run PHP as
+# www-data. The chown near the top of this script happens BEFORE those runs, so
+# without this second pass the following stay root-owned:
+#   cache/scripts/classMap.cache  — written 0600, so www-data cannot read it at
+#     all: every cron job and batch worker logs "Class map could not be loaded"
+#     and rebuilds the autoloader map from scratch on every single invocation.
+#   cache/*.cache, cache/deploy, cache/generator, $LOG_DIR/*.log
+# classMap.cache also needs an explicit chmod: chown alone leaves it 0600.
+chown -R www-data:www-data "$WEB_DIR/content" "$WEB_DIR/cache" "$WEB_DIR/tmp" \
+    "$LOG_DIR" "$APP_DIR/cache" 2>/dev/null || true
+chmod 644 "$APP_DIR/cache/scripts/classMap.cache" 2>/dev/null || true
 
 # ── html5lib (V2 mwEmbed player) ──────────────────────────────────────────────
 # Copy from image path into the web volume once, then patch for PHP 8.1 compat.
