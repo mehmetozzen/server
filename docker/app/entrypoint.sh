@@ -331,6 +331,25 @@ for TMPL in "$APP_DIR/configurations"/*.template.ini "$APP_DIR/configurations"/*
     generate_ini_from_template "$TMPL"
 done
 
+# ── Re-fill the batch API secret after regenerating batchBase.ini ─────────────
+# batchBase.template.ini carries `secret = @BATCH_PARTNER_ADMIN_SECRET@`, and the
+# loop above runs on EVERY boot while the catch-all rule blanks any token it does
+# not know. The secret was only filled inside the first-install branch, so every
+# later restart of this container rewrote batchBase.ini with an empty secret and
+# the batch worker lost its API credentials — `make restart` alone was enough to
+# break transcoding, with nothing logged. Re-fill it from the database, which is
+# the authoritative source. On a fresh install partner -1 does not exist yet;
+# the install branch fills it then.
+BATCHBASE_INI="$APP_DIR/configurations/batchBase.ini"
+if [ -f "$BATCHBASE_INI" ] && grep -qE '^secret[[:space:]]*=[[:space:]]*$' "$BATCHBASE_INI"; then
+    _bsecret=$(mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 -N \
+        -e "SELECT admin_secret FROM partner WHERE id = -1" "$DB_NAME" 2>/dev/null)
+    if [ -n "$_bsecret" ]; then
+        sed -i "s|^secret\([[:space:]]*\)=[[:space:]]*$|secret\1= $_bsecret|" "$BATCHBASE_INI"
+        echo "[kaltura] batchBase.ini: restored batch partner secret from the database"
+    fi
+fi
+
 # ── broadcast.ini: unique per-entry stream names ───────────────────────────────
 # LiveEntry::getStreamName() honors a {entryId} template from the broadcast map;
 # without it every Kaltura-Live entry is named "%i" (shown as "1") and streams
@@ -375,9 +394,30 @@ sort -u -o "$PLUGINS_INI" "$PLUGINS_INI"
 echo "[kaltura] Registered $(wc -l < "$PLUGINS_INI" | tr -d ' ') plugins."
 
 # ── Skip if already fully initialized ─────────────────────────────────────────
-if [ -f "$MARKER" ]; then
-    echo "[kaltura] Already initialized ($(cat $MARKER)). Skipping setup."
+# Install state is derived from the DATABASE, not from the marker file. The
+# marker lives in the bind-mounted working tree, so it drifts from reality in
+# both directions and each direction corrupts an install:
+#   marker gone, DB populated  (git clean -xfd, fresh clone, different checkout
+#     path) → the whole init re-runs over live data, re-inserting partners with
+#     freshly generated secrets while the old rows survive.
+#   marker present, DB empty  (docker volume rm mysql_data) → init is skipped
+#     against an empty schema and everything fails at request time instead.
+# partner -1 is created by insertDefaults.php, so its presence is the ground
+# truth for "this database has been initialised". The marker is kept purely as
+# a human-readable breadcrumb.
+DB_INSTALLED=$(mysql -h"$DB_HOST" -P"$DB_PORT" -uroot -p"$MYSQL_ROOT_PASS" --ssl=0 -N \
+    -e "SELECT COUNT(*) FROM partner WHERE id = -1" "$DB_NAME" 2>/dev/null || echo 0)
+case "$DB_INSTALLED" in ''|*[!0-9]*) DB_INSTALLED=0 ;; esac
+
+if [ "$DB_INSTALLED" -gt 0 ]; then
+    if [ -f "$MARKER" ]; then
+        echo "[kaltura] Already initialized ($(cat "$MARKER")). Skipping setup."
+    else
+        echo "[kaltura] Database already initialized (partner -1 present) but the marker file was missing — restoring it and skipping setup."
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) admin=$ADMIN_EMAIL (marker restored from DB state)" > "$MARKER"
+    fi
 else
+    [ -f "$MARKER" ] && warn "marker file exists but the database has no partner -1 — treating this as a FRESH install (was the mysql volume removed?)"
     echo "[kaltura] Starting database initialization..."
 
     # ── Additional databases ───────────────────────────────────────────────────

@@ -35,8 +35,11 @@ mkdir -p \
     "$APP_DIR/cache/batch" \
     "$APP_DIR/var/run"
 
-# Remove stale PID file from previous run
-rm -f "$APP_DIR/var/run/batch.pid"
+# Remove stale PID files from a previous run. ALL of them, not just batch.pid:
+# pidFileDir gets one file per worker, and the scheduler refuses to start when
+# it finds a pid file whose process still exists — inside a container PID 1 is
+# always alive, so a leftover "1" reads as "scheduler already running".
+rm -f "$APP_DIR/var/run/"*.pid 2>/dev/null || true
 
 # ── Wait for MySQL ─────────────────────────────────────────────────────────────
 echo "[batch] Waiting for MySQL..."
@@ -194,6 +197,16 @@ echo "[batch] batchBase.ini: $(test -f $APP_DIR/configurations/batchBase.ini && 
 
 PHP_BIN=$(which php)
 echo "[batch] PHP binary: $PHP_BIN"
+
+# ── Last-moment ownership re-assert (race with the app container) ─────────────
+# The app container runs installPlugins.php and other init steps as ROOT, on
+# every one of its boots, writing into the log volume and the shared cache/
+# tree. Our chown above can therefore be undone between then and now: on a
+# first boot the app is still initialising while we get here. Re-assert
+# immediately before exec so the manager always starts against files it can
+# write. Cheap (a few dozen entries) and idempotent.
+chown -R www-data:www-data "$LOG_DIR" "$APP_DIR/cache" 2>/dev/null || true
+chmod 644 "$APP_DIR/cache/scripts/classMap.cache" 2>/dev/null || true
 
 exec gosu www-data php "$APP_DIR/batch/KGenericBatchMgr.class.php" \
     "$PHP_BIN" \

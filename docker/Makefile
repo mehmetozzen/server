@@ -22,7 +22,7 @@ DRUID_SERVICES := druid-postgres druid-zookeeper druid-coordinator druid-broker 
 
 .DEFAULT_GOAL := help
 .PHONY: help config build up core-up realtime-up start stop restart down destroy reset \
-        druid-up druid-down logs ps shell mysql
+        druid-up druid-down logs ps shell mysql verify doctor reindex
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -87,6 +87,16 @@ druid-up: ## Start only the Druid analytics stack
 
 druid-down: ## Stop only the Druid analytics stack (reclaims ~4 GB)
 	$(COMPOSE) stop $(DRUID_SERVICES)
+
+# ── Verify & diagnose ───────────────────────────────────────────────────────────
+verify: check-config ## End-to-end smoke test (upload→transcode→playback→search→live→mail)
+	@KALTURA_CONF=$(CONF) $(MAKEFILE_DIR)/scripts/verify.sh
+
+doctor: check-config ## Health, permission and configuration diagnostics (read-only)
+	@KALTURA_CONF=$(CONF) $(MAKEFILE_DIR)/scripts/doctor.sh
+
+reindex: ## Rebuild all Sphinx search indexes from the database
+	@$(MAKEFILE_DIR)/scripts/reindex.sh
 
 # ── Inspect ─────────────────────────────────────────────────────────────────────
 logs: ## Follow logs; one service with  make logs S=kaltura

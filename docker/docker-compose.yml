@@ -1,6 +1,26 @@
-# Usage: docker compose --env-file ./kaltura.conf up -d
+# Usage: make -C docker up   (equivalent: docker compose --env-file ./kaltura.conf up -d)
+
+# Applied to every service below via `<<: *common`.
+#   restart  — a container that dies must come back. Without this a single
+#              crash (or a host reboot) is a silent, permanent outage: the batch
+#              worker died once at first boot on a test host and transcoding
+#              stayed dead for 27 hours because nothing restarted it. Docker
+#              backs off exponentially (100ms → ~1min cap), so a genuinely
+#              broken container retries about once a minute instead of spinning.
+#   logging  — the default json-file driver has NO size cap. Segment-serving
+#              nginx and a restart loop both produce a lot of lines; without a
+#              cap they fill the Docker graph directory.
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   mysql:
+    <<: *common
     image: mysql:5.7
     platform: linux/amd64
     container_name: kaltura_mysql
@@ -8,10 +28,12 @@ services:
       - mysql_data:/var/lib/mysql
       - ./mysql/my.cnf:/etc/mysql/conf.d/kaltura.cnf:ro
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-kaltura_root}
+      # Fail-closed, same policy as the entrypoints: compose refuses to start
+      # rather than initialising the database with a publicly-known password.
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?not set in docker/kaltura.conf — run make -C docker config}"
       MYSQL_DATABASE: kaltura
       MYSQL_USER: ${DB1_USER:-kaltura}
-      MYSQL_PASSWORD: ${DB1_PASS:-kaltura123}
+      MYSQL_PASSWORD: "${DB1_PASS:?not set in docker/kaltura.conf — run make -C docker config}"
     ports:
       - "127.0.0.1:3306:3306"   # host-only: containers reach MySQL via the `mysql` service name
     healthcheck:
@@ -22,12 +44,14 @@ services:
       start_period: 30s
 
   memcache:
+    <<: *common
     image: memcached:1.6-alpine
     container_name: kaltura_memcache
     ports:
       - "127.0.0.1:11211:11211"   # host-only: never expose memcached to the internet
 
   sphinx:
+    <<: *common
     build:
       context: ..
       dockerfile: docker/sphinx/Dockerfile
@@ -46,6 +70,7 @@ services:
       start_period: 15s
 
   kaltura:
+    <<: *common
     build:
       context: ..
       dockerfile: docker/app/Dockerfile
@@ -73,24 +98,45 @@ services:
       DB1_HOST: mysql
       DB1_PORT: "3306"
       DB1_NAME: kaltura
+    healthcheck:
+      # "Serving the API", not "process started". Tries HTTPS first, falls back
+      # to HTTP so the check works in both PROTOCOL modes. start_period covers
+      # the 3-5 minute first-boot initialisation, during which failures do not
+      # count against retries.
+      test: ["CMD-SHELL", "curl -skf 'https://localhost/api_v3/?service=system&action=ping' || curl -sf 'http://localhost/api_v3/?service=system&action=ping'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 420s
 
   packager:
+    <<: *common
     build:
       context: ..
       dockerfile: docker/packager/Dockerfile
     container_name: kaltura_packager
     depends_on:
-      - kaltura
+      # service_healthy, not just "started": the packager proxies every segment
+      # request upstream to Apache, so starting before the API serves produces
+      # 502s with no signal that anything is wrong.
+      kaltura:
+        condition: service_healthy
     ports:
       - "127.0.0.1:88:88"   # host-only: players reach HLS/DASH via the Apache proxy (/hls/, /dash/)
     healthcheck:
-      test: ["CMD", "nginx", "-t"]
+      # `nginx -t` only parses the config file — it passes even when nginx is
+      # dead, so a crashed packager reported healthy forever. Check that the
+      # master process is alive AND the listener accepts connections.
+      # Explicit `bash`: the image has no curl/wget and /bin/sh is dash, which
+      # has no /dev/tcp.
+      test: ["CMD", "bash", "-c", "pgrep -x nginx >/dev/null && exec 3<>/dev/tcp/127.0.0.1/88"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
 
   bundler:
+    <<: *common
     build:
       context: ..
       dockerfile: docker/bundler/Dockerfile
@@ -109,6 +155,7 @@ services:
   # Each service runs via /druid.sh <role> (sh-based; the single-container
   # nano-quickstart path needs perl/supervise which the slim image lacks).
   druid-postgres:
+    <<: *common
     image: postgres:15-alpine
     platform: linux/amd64
     container_name: kaltura_druid_postgres
@@ -125,6 +172,7 @@ services:
       retries: 10
 
   druid-zookeeper:
+    <<: *common
     image: zookeeper:3.8
     platform: linux/amd64
     container_name: kaltura_druid_zookeeper
@@ -132,6 +180,7 @@ services:
       ZOO_MY_ID: 1
 
   druid-coordinator:
+    <<: *common
     image: apache/druid:30.0.1
     platform: linux/amd64
     container_name: kaltura_druid_coordinator
@@ -149,6 +198,7 @@ services:
       - "127.0.0.1:8081:8081"   # host-only: overlord task submission must NEVER be public (RCE risk)
 
   druid-broker:
+    <<: *common
     image: apache/druid:30.0.1
     platform: linux/amd64
     container_name: kaltura_druid_broker
@@ -170,6 +220,7 @@ services:
       start_period: 90s
 
   druid-historical:
+    <<: *common
     image: apache/druid:30.0.1
     platform: linux/amd64
     container_name: kaltura_druid_historical
@@ -183,6 +234,7 @@ services:
       - druid_historical_var:/opt/druid/var
 
   druid-middlemanager:
+    <<: *common
     image: apache/druid:30.0.1
     platform: linux/amd64
     container_name: kaltura_druid_middlemanager
@@ -196,6 +248,7 @@ services:
       - druid_middle_var:/opt/druid/var
 
   druid-router:
+    <<: *common
     image: apache/druid:30.0.1
     platform: linux/amd64
     container_name: kaltura_druid_router
@@ -217,6 +270,7 @@ services:
   # does NOT start by default. To enable: set KAFKA_BROKERS=kafka:9092 (in
   # kaltura.conf) and run `docker compose --profile realtime up -d`.
   kafka:
+    <<: *common
     image: apache/kafka:3.8.0
     container_name: kaltura_kafka
     profiles: ["realtime"]
@@ -249,6 +303,7 @@ services:
   # Translates numeric KAVA eventType -> kKavaBase strings and batch-appends to
   # the player-events-historical Druid datasource. Replaces the SaaS Kanalony.
   analytics-receiver:
+    <<: *common
     build:
       context: ..
       dockerfile: docker/analytics-receiver/Dockerfile
@@ -265,7 +320,7 @@ services:
       DB1_PORT: "3306"
       DB1_NAME: kaltura
       DB1_USER: ${DB1_USER:-kaltura}
-      DB1_PASS: ${DB1_PASS:-}
+      DB1_PASS: "${DB1_PASS:?not set in docker/kaltura.conf — run make -C docker config}"
       WWW_HOST: ${WWW_HOST:-localhost}
       LIVE_PUBLISH_TOKEN: ${LIVE_PUBLISH_TOKEN:-}
       LIVE_CB_SECRET: ${LIVE_CB_SECRET:-}
@@ -290,6 +345,7 @@ services:
   # configured, publishing is REFUSED — set LIVE_ALLOW_ANON_PUBLISH=1 only on
   # an isolated dev box.
   live-rtmp:
+    <<: *common
     build:
       context: ..
       dockerfile: docker/live-rtmp/Dockerfile
@@ -314,6 +370,7 @@ services:
       start_period: 10s
 
   batch:
+    <<: *common
     build:
       context: ..
       dockerfile: docker/batch/Dockerfile
@@ -345,6 +402,7 @@ services:
   # Reuses the batch image (same PHP runtime the official scripts need) with a
   # cron-running entrypoint.
   scheduler:
+    <<: *common
     build:
       context: ..
       dockerfile: docker/batch/Dockerfile

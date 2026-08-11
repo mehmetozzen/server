@@ -146,9 +146,19 @@ make -C docker build
 make -C docker up
 ```
 
+```bash
+# 4. confirm it actually works
+make -C docker doctor
+make -C docker verify
+```
+
 Other useful targets: `make -C docker help` lists them all —
 `core-up` (no Druid), `realtime-up` (with Kafka), `druid-up`/`druid-down`,
-`logs S=<service>`, `ps`, `shell`, `mysql`, `reset`, `destroy`.
+`reindex` (rebuild search), `logs S=<service>`, `ps`, `shell`, `mysql`,
+`reset`, `destroy`.
+
+Every service runs with `restart: unless-stopped` and capped JSON logs, so a
+container that dies comes back instead of leaving a silent hole in the stack.
 
 **First boot takes 3–5 minutes.** `entrypoint.sh` runs a one-time initialisation
 (guarded by the `/opt/kaltura/app/.kaltura_installed` marker):
@@ -248,21 +258,60 @@ prints `[batch] ...` lines. Druid services log JVM startup and then go quiet.
 
 ## 9. Verifying the stack
 
+Two commands cover this. Run them after any install, upgrade or configuration
+change — they exist because every bug this stack has shipped was found by hand,
+hours after it broke.
+
 ```bash
-# all containers healthy?
-docker compose --env-file docker/kaltura.conf -f docker/docker-compose.yml ps
+make -C docker doctor    # read-only diagnostics, seconds
+make -C docker verify    # end-to-end smoke test, ~4 minutes
+```
 
-# API alive
-curl -sk "https://test.example.com/api_v3/?service=system&action=ping"
+**`doctor`** checks container state and restart counts, API reachability, the
+TLS chain, shared-volume ownership (the source of several silent failures),
+that ffmpeg can actually encode, configuration lint (weak or placeholder
+credentials, missing SMTP, live tokens) and that only ports 80/443/1935 are
+public. Exit code 1 if anything is broken.
 
-# Druid broker healthy + datasources
-curl -s http://localhost:8082/status/health
-curl -s http://localhost:8081/druid/coordinator/v1/datasources
+**`verify`** drives a real workflow against a dedicated `kaltura-verify`
+partner: uploads a generated clip, waits for transcoding, fetches the HLS
+master → variant → an actual media segment, the DASH manifest, a thumbnail and
+a flavor download, creates a category and playlist, searches through Sphinx,
+posts analytics beacons (and confirms a forged cross-partner beacon is
+rejected), proves live publishing is refused without a token and accepted with
+one, and checks the mail templates render. It cleans up after itself.
+
+```bash
+VERIFY_ANALYTICS=1 make -C docker verify   # also query the Druid report API (+3 min)
+VERIFY_MAIL=1      make -C docker verify   # actually send a mail through the relay
+KEEP=1             make -C docker verify   # leave the test entry in place
+```
+
+Checks that cannot apply are reported as SKIP, not silently dropped: with
+analytics off the Druid assertions skip, with `SMTP_HOST` empty the mail
+delivery check skips.
+
+Manual spot checks:
+
+```bash
+curl -sk "https://<WWW_HOST>/api_v3/?service=system&action=ping"
+curl -s http://127.0.0.1:8082/status/health                          # Druid broker
+curl -s http://127.0.0.1:8081/druid/coordinator/v1/datasources
 ```
 
 - **KMC NG:** `https://<WWW_HOST>/index.php/kmcng`
 - **Admin Console:** `https://<WWW_HOST>/admin_console`
-- **Druid console:** `http://localhost:8888`
+- **Druid console:** `http://127.0.0.1:8888` (loopback — use an SSH tunnel)
+
+### Recovering search
+
+Sphinx is written synchronously by the app and nothing replays `sphinx_log`, so
+a lost `sphinx_data` volume means permanently empty search results. Rebuild
+every index from the database:
+
+```bash
+make -C docker reindex
+```
 
 ---
 
