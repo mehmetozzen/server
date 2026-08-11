@@ -93,7 +93,7 @@ enabledWorkers.KAsyncStorageUpdate                  = 1
 enabledWorkers.KAsyncRecycleBin                     = 1
 enabledWorkers.KAsyncUpdateUserEntries              = 1
 ; enabledWorkers.KAsyncExportCsv                    = 1  ; disabled upstream too
-; enabledWorkers.KAsyncConvertPdfLinux              = 1  ; needs libreoffice in the batch image
+enabledWorkers.KAsyncConvertPdfLinux                = 1
 
 [Worker]
 maximumExecutionTime                                = 300
@@ -866,9 +866,9 @@ params.sharedTempPath                               = @WEB_DIR@/tmp/exportcsv
 scriptPath											= batches/ExportCsv/kAsyncExportCsvExe.php
 maximumExecutionTime			                    = 3600
 
-; PDF/PPT/DOC → conversion. Requires LibreOffice (`lowriter`), which is NOT in
-; the batch image (≈500 MB). To support document entries: add `libreoffice` to
-; docker/batch/Dockerfile and set enabledWorkers.KAsyncConvertPdfLinux = 1.
+; PDF/PPT/DOC → conversion. Shells out to `lowriter` (LibreOffice), installed in
+; docker/batch/Dockerfile. Without it, document entries upload but never convert
+; and stay unusable in KMC's Documents tab.
 [KAsyncConvertPdfLinux : KAsyncConvertWorker]
 id                                                  = 73
 friendlyName                                        = ConvertPdfLinux

@@ -38,6 +38,20 @@ RUN apt-get update && apt-get install -y \
     msmtp-mta \
     && rm -rf /var/lib/apt/lists/*
 
+# Document ingestion (PDF / PPT / DOC entries). KAsyncConvertPdfLinux shells out
+# to `lowriter`, which comes from libreoffice-writer; impress and calc cover
+# presentations and spreadsheets. ghostscript renders the resulting PDF into the
+# page images the thumbnail worker turns into slide previews.
+# Only the individual components, with --no-install-recommends: the libreoffice
+# metapackage pulls in a desktop stack and roughly triples the cost.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-writer \
+    libreoffice-impress \
+    libreoffice-calc \
+    ghostscript \
+    fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 # mwader/static-ffmpeg ships native ARM64 + amd64 static builds, but omits
 # libfdk_aac (non-free license). Kaltura's KDLOperatorFfmpeg1_1_1 hardcodes
 # -c:a libfdk_aac, so we install the real binary as ffmpeg-real and put a
