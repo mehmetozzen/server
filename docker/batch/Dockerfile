@@ -3,9 +3,9 @@
 # transcode fails and entries stay source-only. 7.1 encodes cleanly. Pinning
 # also makes builds reproducible (an ffmpeg major bump can change encoder
 # defaults across every conversion profile).
-FROM mwader/static-ffmpeg:7.1 AS ffmpeg-source
+FROM mwader/static-ffmpeg:7.1@sha256:a8090df5f5608daef387e1b2e93b98aaacb4d92153ad904e7d715c725724fca4 AS ffmpeg-source
 
-FROM php:8.1-cli
+FROM php:8.1-cli@sha256:76e563191d1ade120313a8736df24154d21da5155c0756f147c0b01bd19d9087
 
 # System libs required for PHP extensions
 RUN apt-get update && apt-get install -y \
@@ -82,8 +82,9 @@ RUN LDAP_LIBDIR=$(find /usr/lib -name "libldap.so" | head -1 | xargs dirname | s
     && docker-php-ext-configure ldap --with-libdir="$LDAP_LIBDIR" \
     && docker-php-ext-install gd ldap
 
-RUN pecl install apcu && docker-php-ext-enable apcu
-RUN pecl install memcache && docker-php-ext-enable memcache
+# Pinned — see the note in docker/app/Dockerfile.
+RUN pecl install apcu-5.1.28 && docker-php-ext-enable apcu
+RUN pecl install memcache-8.2 && docker-php-ext-enable memcache
 
 # Kaltura expects ffmpeg-aux as a separate binary
 RUN ln -sf /usr/bin/ffmpeg /usr/bin/ffmpeg-aux

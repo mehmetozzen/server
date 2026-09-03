@@ -1,4 +1,6 @@
-FROM php:8.1-apache
+# Pinned by digest as well as tag: tags move. Update deliberately with
+#   docker buildx imagetools inspect <image>:<tag> | awk '/^Digest:/{print $2}'
+FROM php:8.1-apache@sha256:72f0c0134922985022d55a39b0390d35dc7a10e961aa6c44fa35b4c3102f4268
 
 RUN apt-get update && apt-get install -y \
     libpng-dev \
@@ -102,8 +104,10 @@ RUN LDAP_LIBDIR=$(find /usr/lib -name "libldap.so" | head -1 | xargs dirname | s
         sockets \
         intl
 
-RUN pecl install apcu && docker-php-ext-enable apcu
-RUN pecl install memcache && docker-php-ext-enable memcache
+# Pinned: an unpinned `pecl install` picks up whatever is current, including a
+# new major, on a rebuild months from now.
+RUN pecl install apcu-5.1.28 && docker-php-ext-enable apcu
+RUN pecl install memcache-8.2 && docker-php-ext-enable memcache
 
 # Kaltura's PHP client SDK is generated from the live API schema by a separate
 # Kaltura repo (clients-generator). The server's generator/generate.php loads
@@ -117,26 +121,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
 
 # kaltura/dwh DDL — stored in image so entrypoint.sh can load schema on first run.
 # Orion-15.1.0 is the last released DWH branch; no Venus-tagged release exists.
-ARG DWH_VERSION=Orion-15.1.0
-RUN curl -fsSL "https://github.com/kaltura/dwh/archive/refs/heads/${DWH_VERSION}.tar.gz" \
+# Fetched by COMMIT, not by branch name: refs/heads/<branch> is a moving target,
+# so the same Dockerfile would produce different DDL over time.
+# Update: curl -s https://api.github.com/repos/kaltura/dwh/commits/Orion-15.1.0 | grep -m1 '"sha"'
+ARG DWH_COMMIT=c642531c6bd8c7e9af35c489a70ea48b949bafd0
+RUN curl -fsSL "https://github.com/kaltura/dwh/archive/${DWH_COMMIT}.tar.gz" \
         -o /tmp/dwh.tar.gz \
     && mkdir -p /opt/kaltura/dwh_ddl \
     && tar -xzf /tmp/dwh.tar.gz -C /tmp \
-    && mv /tmp/dwh-${DWH_VERSION}/ddl /opt/kaltura/dwh_ddl/ddl \
-    && mv /tmp/dwh-${DWH_VERSION}/setup /opt/kaltura/dwh_ddl/setup \
-    && rm -rf /tmp/dwh.tar.gz /tmp/dwh-${DWH_VERSION}
+    && mv /tmp/dwh-${DWH_COMMIT}/ddl /opt/kaltura/dwh_ddl/ddl \
+    && mv /tmp/dwh-${DWH_COMMIT}/setup /opt/kaltura/dwh_ddl/setup \
+    && rm -rf /tmp/dwh.tar.gz /tmp/dwh-${DWH_COMMIT}
 
 # html5lib (mwEmbed V2 player) — stored OUTSIDE the kaltura_web volume so the
 # named volume cannot shadow it. entrypoint.sh copies it in on first run.
 # ENV (not just ARG) so entrypoint.sh can resolve the version at runtime instead
 # of hardcoding it — bumping this arg must not silently break the runtime patches.
+# HTML5LIB_VERSION is only the directory LABEL Kaltura serves this player under
+# (appVersions.ini html5_version) — kaltura/mwEmbed has no v2.7.4 tag, so the
+# content comes from master. That download used to be refs/heads/master, i.e.
+# whatever master happened to be at build time, while entrypoint.sh applies
+# LINE-NUMBERED patches to these files (`sed -n '462p'`). One upstream commit
+# was enough to make those patches silently miss and break the V2 player with
+# a PHP 8 parse error. Pinned to a commit so the tree is identical every build.
+# Update: curl -s https://api.github.com/repos/kaltura/mwEmbed/commits/master | grep -m1 '"sha"'
 ARG HTML5LIB_VERSION=v2.7.4
+ARG MWEMBED_COMMIT=edfa709f5d8ace7310115a7ddea40c892f29ef91
 ENV HTML5LIB_VERSION=${HTML5LIB_VERSION}
-RUN curl -fsSL "https://github.com/kaltura/mwEmbed/archive/refs/heads/master.tar.gz" \
+RUN curl -fsSL "https://github.com/kaltura/mwEmbed/archive/${MWEMBED_COMMIT}.tar.gz" \
         -o /tmp/mwembed.tar.gz \
     && mkdir -p /opt/kaltura/html5lib_image \
     && tar -xzf /tmp/mwembed.tar.gz -C /tmp \
-    && mv /tmp/mwEmbed-master /opt/kaltura/html5lib_image/${HTML5LIB_VERSION} \
+    && mv /tmp/mwEmbed-${MWEMBED_COMMIT} /opt/kaltura/html5lib_image/${HTML5LIB_VERSION} \
     && rm -f /tmp/mwembed.tar.gz
 
 RUN a2enmod rewrite expires headers deflate filter proxy proxy_http

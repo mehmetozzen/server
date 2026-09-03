@@ -4,7 +4,7 @@
 # closed deployment. This follows Kaltura's official FOSS path
 # (platform-install-packages doc/nginx-rtmp-live-streaming.md): RTMP in on the
 # kLive application, HLS out, consumed by a "Manual Live Stream" entry.
-FROM alpine:3.20
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 
 # Alpine packages nginx-mod-rtmp alongside nginx — no source build needed.
 RUN apk add --no-cache nginx nginx-mod-rtmp

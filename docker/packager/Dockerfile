@@ -1,4 +1,6 @@
-FROM ubuntu:22.04 AS builder
+# Pinned by digest as well as tag: tags move. Update deliberately with
+#   docker buildx imagetools inspect <image>:<tag> | awk '/^Digest:/{print $2}'
+FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS builder
 
 ENV NGINX_VERSION=1.25.3
 ENV NGX_VOD_VERSION=1.33
@@ -40,7 +42,7 @@ RUN cd "nginx-${NGINX_VERSION}" && \
     make install
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
-FROM ubuntu:22.04
+FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 libpcre3 libxml2 libxslt1.1 \

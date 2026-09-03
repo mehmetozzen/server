@@ -10,6 +10,17 @@
 #   logging  — the default json-file driver has NO size cap. Segment-serving
 #              nginx and a restart loop both produce a lot of lines; without a
 #              cap they fill the Docker graph directory.
+# Every image below is pinned by DIGEST, not just by tag. A tag is a moving
+# pointer: memcached:1.6-alpine, postgres:15-alpine and zookeeper:3.8 were all
+# re-published under the same tag within weeks of this stack being built, and
+# php:8.1-apache silently moved from a Debian bookworm base to trixie. Without
+# digests, "same commit" does not mean "same stack" — an image rebuild months
+# from now can behave differently with nothing in the repo to explain it.
+#
+# To update a pin deliberately:
+#   docker buildx imagetools inspect <image>:<tag> | awk '/^Digest:/{print $2}'
+# then replace the digest here and re-run `make -C docker build && make verify`.
+
 x-common: &common
   restart: unless-stopped
   logging:
@@ -21,7 +32,7 @@ x-common: &common
 services:
   mysql:
     <<: *common
-    image: mysql:5.7
+    image: mysql:5.7@sha256:4bc6bc963e6d8443453676cae56536f4b8156d78bae03c0145cbe47c2aad73bb
     platform: linux/amd64
     container_name: kaltura_mysql
     volumes:
@@ -49,7 +60,7 @@ services:
 
   memcache:
     <<: *common
-    image: memcached:1.6-alpine
+    image: memcached:1.6-alpine@sha256:c29847751abb41f4c268c84fb3087fee05d4edcbda44409ccb5086e26148e8a7
     container_name: kaltura_memcache
     ports:
       - "127.0.0.1:11211:11211"   # host-only: never expose memcached to the internet
@@ -160,7 +171,7 @@ services:
   # nano-quickstart path needs perl/supervise which the slim image lacks).
   druid-postgres:
     <<: *common
-    image: postgres:15-alpine
+    image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
     platform: linux/amd64
     container_name: kaltura_druid_postgres
     environment:
@@ -177,7 +188,7 @@ services:
 
   druid-zookeeper:
     <<: *common
-    image: zookeeper:3.8
+    image: zookeeper:3.8@sha256:b601a8c4403f16eefb4e21e1ab14ba1e723c0b2ae923303e4433afb385e8372e
     platform: linux/amd64
     container_name: kaltura_druid_zookeeper
     environment:
@@ -185,7 +196,7 @@ services:
 
   druid-coordinator:
     <<: *common
-    image: apache/druid:30.0.1
+    image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_coordinator
     depends_on:
@@ -203,7 +214,7 @@ services:
 
   druid-broker:
     <<: *common
-    image: apache/druid:30.0.1
+    image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_broker
     depends_on:
@@ -225,7 +236,7 @@ services:
 
   druid-historical:
     <<: *common
-    image: apache/druid:30.0.1
+    image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_historical
     depends_on:
@@ -239,7 +250,7 @@ services:
 
   druid-middlemanager:
     <<: *common
-    image: apache/druid:30.0.1
+    image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_middlemanager
     depends_on:
@@ -253,7 +264,7 @@ services:
 
   druid-router:
     <<: *common
-    image: apache/druid:30.0.1
+    image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_router
     depends_on:
@@ -275,7 +286,7 @@ services:
   # kaltura.conf) and run `docker compose --profile realtime up -d`.
   kafka:
     <<: *common
-    image: apache/kafka:3.8.0
+    image: apache/kafka:3.8.0@sha256:c89f315cff967322c5d2021434b32271393cb193aa7ec1d43e97341924e57069
     container_name: kaltura_kafka
     profiles: ["realtime"]
     environment:
