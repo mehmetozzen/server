@@ -83,6 +83,7 @@ $LOG_DIR/kaltura_api_v3_analytics.log
 $LOG_DIR/kaltura_api_v3_tests.log
 $LOG_DIR/kaltura_prod.log
 $LOG_DIR/kaltura_admin.log
+$LOG_DIR/kaltura_multi_publishers.log
 $LOG_DIR/kaltura_scripts.log
 $LOG_DIR/kaltura_deploy.log
 $LOG_DIR/cron.log
@@ -111,7 +112,12 @@ $LOG_DIR/batch/*.log
 {
     daily
     maxsize 200M
-    rotate 5
+    # 40, not 5: kaltura_batch.template keeps 40 generations where every
+    # other Kaltura template keeps 5, and that asymmetry is deliberate —
+    # the batch log is where "why did last week's transcode fail" is
+    # answered. With maxsize 200M a busy install rotates several times a
+    # day, so 5 generations can be only a few hours of history.
+    rotate 40
     compress
     copytruncate
     missingok
@@ -174,6 +180,13 @@ PROTOCOL=${PROTOCOL:-https}
 
 # Shared tmp janitor: convert/upload leftovers older than 7 days
 30 3 * * * www-data find $TMP_DIR -type f -mtime +7 -delete >> $LOG_DIR/cron.log 2>&1
+
+# Batch worker logs are per-DAY files (bulkupload-0-2026-09-03.log), so
+# logrotate compresses each one once and then never touches it again —
+# nothing deletes them. Measured on a fresh install: 180 files / 76 MB in
+# the first 11 hours, which projects to tens of thousands of files a year.
+# 30 days of worker logs; kaltura_batch.log itself keeps 40 rotations.
+35 3 * * * www-data find $LOG_DIR/batch -type f -mtime +30 -delete >> $LOG_DIR/cron.log 2>&1
 EOF
 chmod 0644 /etc/cron.d/kaltura
 
