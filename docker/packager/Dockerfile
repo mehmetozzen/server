@@ -53,10 +53,16 @@ COPY --from=builder /usr/sbin/nginx /usr/sbin/nginx
 COPY --from=builder /etc/nginx      /etc/nginx
 
 COPY docker/packager/nginx.conf /etc/nginx/nginx.conf
+# Waits for the kaltura_app name to resolve before starting nginx: nginx binds
+# its upstreams at config load and dies if one is unresolvable, which under
+# restart: unless-stopped becomes a permanent crash loop. See entrypoint.sh.
+COPY docker/packager/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 88
 
 HEALTHCHECK --interval=15s --timeout=5s --retries=5 \
     CMD nginx -t 2>/dev/null && kill -0 "$(cat /var/run/nginx.pid)" 2>/dev/null
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
