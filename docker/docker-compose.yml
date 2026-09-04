@@ -35,6 +35,7 @@ services:
     image: mysql:5.7@sha256:4bc6bc963e6d8443453676cae56536f4b8156d78bae03c0145cbe47c2aad73bb
     platform: linux/amd64
     container_name: kaltura_mysql
+    networks: { default: { ipv4_address: 172.31.83.10 } }
     volumes:
       - mysql_data:/var/lib/mysql
       - ./mysql/my.cnf:/etc/mysql/conf.d/kaltura.cnf:ro
@@ -62,6 +63,7 @@ services:
     <<: *common
     image: memcached:1.6-alpine@sha256:c29847751abb41f4c268c84fb3087fee05d4edcbda44409ccb5086e26148e8a7
     container_name: kaltura_memcache
+    networks: { default: { ipv4_address: 172.31.83.11 } }
     ports:
       - "127.0.0.1:11211:11211"   # host-only: never expose memcached to the internet
 
@@ -72,6 +74,7 @@ services:
       dockerfile: docker/sphinx/Dockerfile
     platform: linux/amd64
     container_name: kaltura_sphinx
+    networks: { default: { ipv4_address: 172.31.83.12 } }
     volumes:
       - ..:/opt/kaltura/app:ro
       - sphinx_data:/opt/sphinx
@@ -90,6 +93,7 @@ services:
       context: ..
       dockerfile: docker/app/Dockerfile
     container_name: kaltura_app
+    networks: { default: { ipv4_address: 172.31.83.13 } }
     depends_on:
       mysql:
         condition: service_healthy
@@ -130,6 +134,7 @@ services:
       context: ..
       dockerfile: docker/packager/Dockerfile
     container_name: kaltura_packager
+    networks: { default: { ipv4_address: 172.31.83.16 } }
     depends_on:
       # service_healthy, not just "started": the packager proxies every segment
       # request upstream to Apache, so starting before the API serves produces
@@ -156,6 +161,7 @@ services:
       context: ..
       dockerfile: docker/bundler/Dockerfile
     container_name: kaltura_bundler
+    networks: { default: { ipv4_address: 172.31.83.17 } }
     ports:
       - "127.0.0.1:8080:8080"   # host-only: the app reaches the bundler over the compose network
     healthcheck:
@@ -174,6 +180,7 @@ services:
     image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
     platform: linux/amd64
     container_name: kaltura_druid_postgres
+    networks: { default: { ipv4_address: 172.31.83.30 } }
     environment:
       POSTGRES_USER: druid
       POSTGRES_PASSWORD: druid
@@ -191,6 +198,7 @@ services:
     image: zookeeper:3.8@sha256:b601a8c4403f16eefb4e21e1ab14ba1e723c0b2ae923303e4433afb385e8372e
     platform: linux/amd64
     container_name: kaltura_druid_zookeeper
+    networks: { default: { ipv4_address: 172.31.83.31 } }
     environment:
       ZOO_MY_ID: 1
 
@@ -199,6 +207,7 @@ services:
     image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_coordinator
+    networks: { default: { ipv4_address: 172.31.83.32 } }
     depends_on:
       druid-postgres:
         condition: service_healthy
@@ -217,6 +226,7 @@ services:
     image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_broker
+    networks: { default: { ipv4_address: 172.31.83.33 } }
     depends_on:
       druid-coordinator:
         condition: service_started
@@ -239,6 +249,7 @@ services:
     image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_historical
+    networks: { default: { ipv4_address: 172.31.83.34 } }
     depends_on:
       druid-coordinator:
         condition: service_started
@@ -253,6 +264,7 @@ services:
     image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_middlemanager
+    networks: { default: { ipv4_address: 172.31.83.35 } }
     depends_on:
       druid-coordinator:
         condition: service_started
@@ -267,6 +279,7 @@ services:
     image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_router
+    networks: { default: { ipv4_address: 172.31.83.36 } }
     depends_on:
       druid-coordinator:
         condition: service_started
@@ -294,6 +307,7 @@ services:
     # was the only service missing the pin.
     platform: linux/amd64
     container_name: kaltura_kafka
+    networks: { default: { ipv4_address: 172.31.83.20 } }
     profiles: ["realtime"]
     environment:
       KAFKA_NODE_ID: 1
@@ -329,6 +343,7 @@ services:
       context: ..
       dockerfile: docker/analytics-receiver/Dockerfile
     container_name: kaltura_analytics_receiver
+    networks: { default: { ipv4_address: 172.31.83.19 } }
     # Explicit env only — NOT env_file: this process parses unauthenticated
     # player beacons; it must not carry MYSQL_ROOT_PASSWORD or
     # ADMIN_CONSOLE_PASSWORD in its environment.
@@ -374,6 +389,7 @@ services:
       context: ..
       dockerfile: docker/live-rtmp/Dockerfile
     container_name: kaltura_live_rtmp
+    networks: { default: { ipv4_address: 172.31.83.18 } }
     depends_on:
       analytics-receiver:
         condition: service_started   # on_publish auth callback target
@@ -399,6 +415,7 @@ services:
       context: ..
       dockerfile: docker/batch/Dockerfile
     container_name: kaltura_batch
+    networks: { default: { ipv4_address: 172.31.83.14 } }
     hostname: kaltura_batch
     depends_on:
       mysql:
@@ -431,6 +448,7 @@ services:
       context: ..
       dockerfile: docker/batch/Dockerfile
     container_name: kaltura_scheduler
+    networks: { default: { ipv4_address: 172.31.83.15 } }
     depends_on:
       mysql:
         condition: service_healthy
@@ -469,3 +487,24 @@ volumes:
   druid_historical_var:
   druid_middle_var:
   druid_router_var:
+
+# Fixed addresses, not Docker's start-order allocation. Apache's ProxyPass and
+# nginx's proxy_pass / on_publish all bind the backend's ADDRESS when their
+# config loads and never look it up again, so recreating a single service used
+# to break the ones pointing at it: after a packager recreate every /hls/ and
+# /dash/ request 502'd, and after an analytics-receiver recreate live publishing
+# was refused — both silently, with DNS and HTTP working fine the whole time.
+# Pinning the addresses removes the whole class of failure instead of patching
+# each proxy directive separately.
+#
+# The subnet sits high in Docker's own 172.16-172.31 range, which it allocates
+# upward from 172.17, so it is the least likely to be taken by another compose
+# project. If it collides with something on the host, compose fails LOUDLY at
+# `up` ("Pool overlaps with other one") — change the last three octets here and
+# in the services above together.
+networks:
+  default:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.31.83.0/24
