@@ -1316,13 +1316,24 @@ async function start() {
   // publishHistorical() falls back to the batch buffer, so analytics keeps
   // working with Kafka switched off — it is an optimisation, not a dependency.
   if (KAFKA_BROKERS.length) {
-    startKafka()
-      .then(() => Promise.all([
-        submitRealtimeSupervisor(),
-        submitHistoricalSupervisor(),
-        submitCompaction(),
-      ]))
-      .catch((e) => console.error(`[receiver] kafka init failed (batch fallback in use): ${e.message}`));
+    // Retry, do not give up: a single attempt at boot loses the race on every
+    // cold start. Kafka needs ~40s (JVM + KRaft format) while this container is
+    // up in two, so the one-shot version silently ran in batch fallback until
+    // someone recreated it by hand. Observed exactly that on a real host.
+    // Each retry is harmless — supervisor submission is idempotent.
+    const connectKafka = () => {
+      startKafka()
+        .then(() => Promise.all([
+          submitRealtimeSupervisor(),
+          submitHistoricalSupervisor(),
+          submitCompaction(),
+        ]))
+        .catch((e) => {
+          console.error(`[receiver] kafka not ready (${e.message}) — batch fallback in use, retrying in 30s`);
+          setTimeout(connectKafka, 30000).unref();
+        });
+    };
+    connectKafka();
   } else {
     // No Kafka: compaction still matters, the batch path is what created the
     // fragmentation in the first place.
@@ -1347,6 +1358,14 @@ function shutdown(sig) {
   shuttingDown = true;
   console.log(`[receiver] ${sig}: flushing ${buffer.length} buffered events, exiting in 3s`);
   try { flush(); } catch (e) { console.error(`[receiver] shutdown flush: ${e.message}`); }
+  // kafkajs batches produce calls in memory, so the last beacons of a session
+  // die with the process unless the producer is disconnected explicitly —
+  // disconnect() sends what is still queued. Fits inside the 3s grace below.
+  if (kafkaProducer) {
+    kafkaProducer.disconnect()
+      .then(() => console.log('[receiver] kafka producer flushed'))
+      .catch((e) => console.error(`[receiver] kafka disconnect: ${e.message}`));
+  }
   setTimeout(() => process.exit(0), 3000);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));

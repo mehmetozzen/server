@@ -240,12 +240,24 @@ step "receiver ingests into Druid"
 if [ "$DRUID_UP" = no ]; then
     skip "analytics stack not running (core-only mode)"
 else
-    deadline=$(( $(date +%s) + 90 )); seen=no
+    # Check the ROWS, not the receiver's log. The old version grepped for
+    # "ingested N events", which only the fallback batch path prints — with
+    # Kafka streaming a single supervisor consumes continuously and logs
+    # nothing per batch, so the log check failed while the data was in fact
+    # ingested (report API on the next step returned it). Querying Druid
+    # verifies the thing we actually care about, and works for both paths.
+    D_FROM=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d yesterday +%Y-%m-%d)
+    D_TO=$(date -u -v+1d +%Y-%m-%d 2>/dev/null || date -u -d tomorrow +%Y-%m-%d)
+    DQ='{"queryType":"timeseries","dataSource":"player-events-historical","granularity":"all","intervals":["'$D_FROM'/'$D_TO'"],"filter":{"type":"selector","dimension":"entryId","value":"'$ENTRY'"},"aggregations":[{"type":"count","name":"c"}]}'
+    deadline=$(( $(date +%s) + 150 )); seen=no; rows=0
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        docker logs --since 5m kaltura_analytics_receiver 2>&1 | grep -q 'ingested [0-9]* events' && { seen=yes; break; }
+        rows=$(printf '%s' "$DQ" | docker exec -i kaltura_app curl -s --max-time 15 -X POST \
+                 -H 'Content-Type: application/json' -d @- http://druid-broker:8082/druid/v2/ 2>/dev/null \
+               | grep -o '"c":[0-9]*' | head -1 | cut -d: -f2)
+        [ "${rows:-0}" -gt 0 ] && { seen=yes; break; }
         sleep 5
     done
-    [ "$seen" = yes ] && pass || fail "receiver never reported an ingest in 90s"
+    [ "$seen" = yes ] && pass "$rows rows in Druid" || fail "no rows for $ENTRY in player-events-historical after 150s"
 fi
 
 step "report API returns data"
