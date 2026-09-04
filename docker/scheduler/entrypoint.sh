@@ -161,7 +161,8 @@ WWW_HOST=${WWW_HOST:-localhost}
 PROTOCOL=${PROTOCOL:-https}
 
 # API cache cleanup (configurations/cron/api.template).
-# Invoked via `bash <script>`, not directly: the script is mode 0644 in git and
+# Invoked via 'bash <script>', not directly: the script is mode 0644 in git and
+# (quotes, not backticks — this heredoc is unquoted, so backticks would run.)
 # the tree is bind-mounted, so it has no exec bit here (bare metal gets it from
 # the RPM installer). Executing it directly fails every run with
 # "bad interpreter: Permission denied" and the API cache is never cleaned.
@@ -176,7 +177,11 @@ PROTOCOL=${PROTOCOL:-https}
 * * * * * root . /etc/kaltura.d/docker.env && /usr/local/bin/php $APP_DIR/docker/scheduler/upload_recordings.php >> $LOG_DIR/live_recordings.log 2>&1
 
 # Log rotation (state lives on the log volume so it survives recreates)
-17 * * * * root /usr/sbin/logrotate -s $LOG_DIR/.logrotate.state /etc/logrotate.d/kaltura >> $LOG_DIR/cron.log 2>&1
+# chown first: the stanzas run as www-data (su www-data www-data) while the
+# app's root-run init leaves some logs root-owned, and logrotate then fails
+# with "Permission denied" once an hour and never rotates them. Root writers
+# (this cron, upload_recordings) can still append after the ownership change.
+17 * * * * root chown www-data:www-data $LOG_DIR/*.log 2>/dev/null; /usr/sbin/logrotate -s $LOG_DIR/.logrotate.state /etc/logrotate.d/kaltura >> $LOG_DIR/cron.log 2>&1
 
 # Shared tmp janitor: convert/upload leftovers older than 7 days
 30 3 * * * www-data find $TMP_DIR -type f -mtime +7 -delete >> $LOG_DIR/cron.log 2>&1

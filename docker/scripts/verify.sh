@@ -81,7 +81,13 @@ curl -sk --max-time 15 "$API/?service=system&action=ping" 2>/dev/null | grep -q 
 # run repeatable: reused when present, created once when not.
 sect "Partner"
 step "verify partner"
-read -r PID SECRET <<<"$(mysqlq "SELECT id, admin_secret FROM partner WHERE name = '$VERIFY_PARTNER_NAME' LIMIT 1")"
+# Two bugs lived on this line and both hid behind mysqlq's 2>/dev/null, so the
+# reuse branch never ran and every verify run created a fresh partner (proven on
+# a real host: four kaltura-* partners from four runs):
+#   - the column is partner_name, not name;
+#   - mysqlq wraps the query in single quotes (-e '$1'), so a single-quoted SQL
+#     literal closes that wrapper. Double quotes, as every other query here uses.
+read -r PID SECRET <<<"$(mysqlq "SELECT id, admin_secret FROM partner WHERE partner_name = \"$VERIFY_PARTNER_NAME\" LIMIT 1")"
 if [ -n "${PID:-}" ]; then
     pass "reusing partner $PID"
 else
