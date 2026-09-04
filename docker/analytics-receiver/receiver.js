@@ -84,11 +84,29 @@ const DB = {
 const EVENT_TYPE_MAP = {
   1: 'playerImpression', 2: 'playRequested', 3: 'play', 4: 'resume',
   11: 'playThrough25', 12: 'playThrough50', 13: 'playThrough75', 14: 'playThrough100',
+  // 16-20 are the legacy kwidget/mwEmbed numbers; they do not collide with the
+  // V7 ones below, so both players are understood.
   16: 'replay', 17: 'seek', 18: 'editClicked', 19: 'shareClicked', 20: 'shared',
-  21: 'downloadClicked', 22: 'reportClicked', 24: 'enterFullscreen', 25: 'exitFullscreen',
-  32: 'info', 33: 'pauseClicked', 34: 'replay', 35: 'seek', 38: 'captions',
-  39: 'sourceSelected', 41: 'speed', 43: 'flavorSwitch', 45: 'bufferStart',
-  46: 'bufferStart', 48: 'error', 98: 'error', 99: 'viewPeriod',
+  // 21-46 corrected against kaltura/playkit-js-kava (kava-event-model). The
+  // previous values were off by several slots — 21 was mapped to
+  // downloadClicked when it is SHARE_CLICKED, 24/25 to fullscreen when they are
+  // REPORT_CLICKED/REPORT_SUBMITTED, 32 to info when it is EXIT_FULLSCREEN — so
+  // those events were being filed under the wrong dimension value entirely.
+  21: 'shareClicked', 22: 'shared', 23: 'downloadClicked',
+  24: 'reportClicked', 25: 'reportSubmitted',
+  31: 'enterFullscreen', 32: 'exitFullscreen', 33: 'pauseClicked', 34: 'replay',
+  35: 'seek', 36: 'relatedClicked', 37: 'relatedSelected', 38: 'captions',
+  39: 'sourceSelected', 40: 'info', 41: 'speed', 43: 'flavorSwitch',
+  45: 'bufferStart',
+  // Deliberately unmapped: 15 (PLAY_REACHED_90_PERCENT), 42 (AUDIO_SELECTED)
+  // and 46 (BUFFER_END) have no dimension value in kKavaBase. 46 used to be
+  // mapped to bufferStart, which double-counted every buffering incident.
+  48: 'error', 98: 'error',
+  // 99 is VIEW, not viewPeriod: every QoE aggregator in kKavaReportsMgr filters
+  // on eventType == 'view'. Emitting only 'viewPeriod' left all of them at zero.
+  // Historical needs BOTH names (sum_view_period is viewPeriod-filtered), so the
+  // handler emits a twin row — see emitRows().
+  99: 'view',
 };
 
 // Kaltura KalturaMediaType int -> string
@@ -168,7 +186,7 @@ function sessionState(id) {
   let s = sessions.get(id);
   if (!s) {
     if (sessions.size >= MAX_SESSIONS) sessions.delete(sessions.keys().next().value);
-    s = { lastSeen: Date.now(), lastPlayTime: 0, maxPct: 0, seen: new Set() };
+    s = { lastSeen: Date.now(), lastPlayTime: 0, lastQuartilePlayTime: 0, maxPct: 0, seen: new Set() };
     sessions.set(id, s);
   }
   s.lastSeen = Date.now();
@@ -246,7 +264,7 @@ async function buildRow(p, req) {
 
   // ── Derived play-time + percentile (for Minutes Viewed, completion, heatmap) ──
   let playTimeSum = 0, percentile = 0, uniquePercentiles = 0;
-  if (eventType === 'viewPeriod') {
+  if (eventType === 'view' || eventType === 'viewPeriod') {
     // Beacon playTimeSum is cumulative; the per-period delta is the real play time.
     const cur = num(p.playTimeSum, 0);
     let delta = cur - (session ? session.lastPlayTime : 0);
@@ -264,7 +282,20 @@ async function buildRow(p, req) {
       uniquePercentiles = percentile;
     }
   } else if (eventType.startsWith('playThrough')) {
-    playTimeSum = num(p.playTimeSum, 0);
+    // The player sends NO playTimeSum on quartile events — verified twice: the
+    // captured beacon carries only position/bufferTime/actualBitrate, and
+    // playkit-js-kava's PLAY_REACHED_*_PERCENT model is empty. Yet Kaltura's
+    // "Minutes Viewed" is longSum(playTimeSum) filtered to exactly these events
+    // (METRIC_QUARTILE_PLAY_TIME -> 'sum_time_viewed'), so reading it off the
+    // beacon yielded a permanent zero. Kanalony derives it from session state;
+    // do the same — emit the play time accrued since the previous quartile so
+    // the four quartile rows of a session sum to the time actually watched.
+    if (session) {
+      playTimeSum = Math.max(0, session.lastPlayTime - session.lastQuartilePlayTime);
+      session.lastQuartilePlayTime = session.lastPlayTime;
+    } else {
+      playTimeSum = num(p.playTimeSum, 0);
+    }
     percentile = { playThrough25: 25, playThrough50: 50, playThrough75: 75, playThrough100: 100 }[eventType] || 0;
   }
 
@@ -272,7 +303,7 @@ async function buildRow(p, req) {
   const eventProperties = [];
   const bitrate = num(p.actualBitrate, 0) || num(p.averageBitrate, 0);
   let bitrateSum = 0, bitrateCount = 0;
-  if (bitrate > 0 && eventType === 'viewPeriod') { bitrateSum = bitrate; bitrateCount = 1; eventProperties.push('hasBitrate'); }
+  if (bitrate > 0 && (eventType === 'view' || eventType === 'viewPeriod')) { bitrateSum = bitrate; bitrateCount = 1; eventProperties.push('hasBitrate'); }
   const bufferTime = num(p.bufferTime, 0);
   let bufferTimeSum = 0;
   if (bufferTime > 0) { bufferTimeSum = bufferTime; eventProperties.push('isBuffering'); }
@@ -719,9 +750,9 @@ async function pollUsageInner() {
 // The Real-Time tab (kKavaRealtimeReports) queries player-events-realtime with
 // 30s cache — minute-latency batch tasks cannot feed it. Each beacon is also
 // produced to a Kafka topic that a Druid supervisor consumes within seconds.
-// The realtime row differs from the historical one in eventType naming only:
-// beacon 99 is 'viewPeriod' in historical and 'view' in realtime (kKavaBase
-// EVENT_TYPE_VIEW vs EVENT_TYPE_VIEW_PERIOD).
+// Realtime wants 'view' for beacon 99, which is now what buildRow already
+// produces; the historical twin ('viewPeriod') is added on the buffer side only
+// and must not be published here.
 let kafkaProducer = null;
 
 async function startKafka() {
@@ -735,8 +766,7 @@ async function startKafka() {
 
 function publishRealtime(row) {
   if (!kafkaProducer) return;
-  const rt = { ...row, eventType: row.eventType === 'viewPeriod' ? 'view' : row.eventType };
-  kafkaProducer.send({ topic: REALTIME_TOPIC, messages: [{ value: JSON.stringify(rt) }] })
+  kafkaProducer.send({ topic: REALTIME_TOPIC, messages: [{ value: JSON.stringify(row) }] })
     .catch((e) => console.error(`[receiver] kafka send: ${e.message}`));
 }
 
@@ -1098,7 +1128,14 @@ const server = http.createServer((req, res) => {
     try {
       const row = await buildRow(parseParams(req, body), req);
       if (row) {
-        buffer.push(row); if (buffer.length >= MAX_BUFFER) flush();
+        buffer.push(row);
+        // One beacon, two rows: the historical datasource carries BOTH names
+        // for a view heartbeat. QoE (segment/manifest download time, latency,
+        // dropped frames, bandwidth) and the live-style metrics filter on
+        // 'view'; sum_view_period filters on 'viewPeriod'. Every metric is
+        // eventType-filtered, so the twin cannot double-count anything.
+        if (row.eventType === 'view') buffer.push({ ...row, eventType: 'viewPeriod' });
+        if (buffer.length >= MAX_BUFFER) flush();
         publishRealtime(row);   // fire-and-forget → Real-Time tab
       }
     } catch (e) { console.error(`[receiver] handler error: ${e.message}`); }
