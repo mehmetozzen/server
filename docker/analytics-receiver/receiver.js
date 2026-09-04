@@ -1046,7 +1046,15 @@ async function setLiveStreams(name, entry) {
     'entryServerNode:streams:0:bitrate': '1000000',
     'entryServerNode:streams:0:width': '1280',
     'entryServerNode:streams:0:height': '720',
-    'entryServerNode:streams:0:codec': 'avc1',
+    // Must be the h264 constant, not an RFC 6381 string like 'avc1'.
+    // DeliveryProfileLiveAppleHttp omits the CODECS attribute for h264/h265
+    // and lets the player probe the segments; any other value is copied into
+    // the master playlist verbatim. Reporting 'avc1' produced
+    // CODECS="avc1" -- no profile/level, no audio codec -- which hls.js
+    // rejects with MANIFEST_INCOMPATIBLE_CODECS_ERROR, so every live preview
+    // (KMC player and Real-Time "Broadcasting Now") failed while the stream
+    // itself was fine.
+    'entryServerNode:streams:0:codec': 'h264',
   });
 }
 
