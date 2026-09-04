@@ -79,6 +79,41 @@ fi
 # ── Configure Apache VirtualHost from template ─────────────────────────────────
 # Must run before any apache2ctl start so the temp init Apache has Kaltura routes.
 setup_apache() {
+    # ── MPM tuning ────────────────────────────────────────────────────────────
+    # The image ships Debian's defaults (StartServers 5 / MaxSpareServers 10),
+    # which are wrong for video: every HLS segment occupies one prefork worker,
+    # so a burst of viewers needs dozens at once. After ~45s of quiet Apache
+    # reaps the pool back to ~18 workers, and the next burst has to fork ~40
+    # more before it can serve anything. Measured here: first burst of 50
+    # concurrent segment requests p50 5.7s, the two bursts after it 0.26-0.32s,
+    # and slow again after the next idle period — the "it is sometimes slow but
+    # I cannot reproduce it" complaint, exactly.
+    # The behaviour is a CLIFF, not a gradient — measured on this stack with a
+    # 60s idle period before each burst:
+    #     warm pool 16 -> burst of 50: p50 5.49s
+    #     warm pool 32 -> burst of 30: p50 0.34s | burst of 50: p50 5.13s
+    #     warm pool 64 -> burst of 50: p50 0.33s
+    # Bursts up to the warm pool are served in milliseconds; one request beyond
+    # it costs ~5 seconds for the whole burst. So size APACHE_MIN_SPARE to the
+    # expected number of SIMULTANEOUS segment requests, not to the number of
+    # viewers: a viewer pulls one segment every 6-10s, so 32 warm workers carry
+    # a few hundred steady-state viewers — the pool only matters for bursts
+    # (a lecture starting, or the first requests after a quiet period).
+    # Cost is APACHE_MIN_SPARE x ~32 MB resident, so 32 is ~1 GB. Lower it on a
+    # small host and accept the stall, raise it if bursts are larger.
+    # MaxConnectionsPerChild is no longer 0: workers that never recycle keep any
+    # PHP leak forever.
+    cat > /etc/apache2/mods-available/mpm_prefork.conf <<APACHE_MPM
+<IfModule mpm_prefork_module>
+    StartServers            ${APACHE_START_SERVERS:-32}
+    MinSpareServers         ${APACHE_MIN_SPARE:-32}
+    MaxSpareServers         ${APACHE_MAX_SPARE:-64}
+    MaxRequestWorkers       ${APACHE_MAX_WORKERS:-150}
+    MaxConnectionsPerChild  ${APACHE_MAX_CONN_PER_CHILD:-1000}
+</IfModule>
+APACHE_MPM
+    echo "[kaltura] Apache MPM: start=${APACHE_START_SERVERS:-32} minSpare=${APACHE_MIN_SPARE:-32} maxSpare=${APACHE_MAX_SPARE:-64} maxWorkers=${APACHE_MAX_WORKERS:-150}"
+
     local BODY_TMPL="/etc/apache2/kaltura-vhost-body.template"
     local CONF_OUT="/etc/apache2/sites-enabled/000-default.conf"
     local BODY
