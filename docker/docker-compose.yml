@@ -287,6 +287,12 @@ services:
   kafka:
     <<: *common
     image: apache/kafka:3.8.0@sha256:c89f315cff967322c5d2021434b32271393cb193aa7ec1d43e97341924e57069
+    # Pinned like every other third-party image here: this digest is a manifest
+    # list, and on Apple Silicon Docker picks the arm64 variant whose JDK 21
+    # build dies instantly with SIGILL in System.registerNatives(). The rest of
+    # the stack already runs amd64 under emulation, so Kafka must match — this
+    # was the only service missing the pin.
+    platform: linux/amd64
     container_name: kaltura_kafka
     profiles: ["realtime"]
     environment:
@@ -330,7 +336,10 @@ services:
       DRUID_OVERLORD: http://druid-coordinator:8081
       DRUID_BROKER: http://druid-broker:8082
       KAFKA_BROKERS: ${KAFKA_BROKERS:-}   # empty = Real-Time streaming OFF (opt-in; set to kafka:9092 to enable)
-      FLUSH_INTERVAL_MS: "15000"
+      # Only the fallback batch path uses this — with KAFKA_BROKERS set the rows
+      # stream through a supervisor instead. 15s produced one Druid index task
+      # every 15 seconds, each a fresh JVM peon regardless of row count.
+      FLUSH_INTERVAL_MS: "60000"
       DB1_HOST: mysql
       DB1_PORT: "3306"
       DB1_NAME: kaltura

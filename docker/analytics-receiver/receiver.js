@@ -28,8 +28,18 @@ const DATASOURCE       = 'player-events-historical';
 // realtime reports see data within seconds. Empty KAFKA_BROKERS = disabled.
 const KAFKA_BROKERS    = (process.env.KAFKA_BROKERS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const REALTIME_DS      = 'player-events-realtime';
+// Historical rows go through their own topic, not the realtime one: the
+// historical datasource needs the 'viewPeriod' twin of every view row and the
+// realtime one must not have it (its metrics would double-count).
+const HISTORICAL_TOPIC = 'player-events-historical';
 const REALTIME_TOPIC   = 'player-events-realtime';
-const FLUSH_INTERVAL_MS = parseInt(process.env.FLUSH_INTERVAL_MS || '15000', 10);
+// 60s, not 15s: every flush with data becomes its own index_parallel task,
+// and each task is a fresh JVM peon whose cost is fixed regardless of how few
+// rows it writes. Measured on an idle test install: 59 tasks averaging 36s of
+// runtime to persist 258 rows across 52 segments (5 rows / 2 KB per segment).
+// This interval only applies to the FALLBACK batch path — with Kafka the rows
+// stream through a single long-running supervisor and never queue here.
+const FLUSH_INTERVAL_MS = parseInt(process.env.FLUSH_INTERVAL_MS || '60000', 10);
 const MAX_BUFFER       = parseInt(process.env.MAX_BUFFER || '500', 10);
 // Hard ceiling on events retained across failed flushes — beyond this the
 // OLDEST events are dropped (logged). Without a cap, a long Druid outage (or
@@ -311,6 +321,33 @@ async function buildRow(p, req) {
   let eventDoubleSum1 = 0;
   if (joinTime > 0 && eventType === 'play') { eventDoubleSum1 = joinTime; eventProperties.push('hasJoinTime'); }
 
+  // ── Quality of Experience ──────────────────────────────────────────────────
+  // Every QoE aggregator in kKavaReportsMgr is filtered on
+  // eventType == 'view' AND a matching eventProperties flag, and each sum is
+  // paired with a COUNT aggregator carrying the same filter — the reports show
+  // averages, so a sum without its flag produces a zero denominator and the
+  // metric stays blank. The flags are load-bearing, not decoration.
+  // Parameter names are the player's own (kaltura/playkit-js-kava, kava-model):
+  // bandwidth, droppedFramesRatio, segmentDownloadTime, manifestDownloadTime,
+  // networkConnectionOverhead (DNS+SSL+TCP, Kaltura's "latency").
+  // All five are CONDITIONAL in the VIEW event, so a missing one is normal and
+  // must not be emitted as a zero — that would drag every average down.
+  let bandwidthSum = 0, droppedFramesRatioSum = 0, latencySum = 0;
+  let segmentDownloadTimeSum = 0, manifestDownloadTimeSum = 0;
+  if (eventType === 'view') {
+    const bw = num(p.bandwidth, 0);
+    if (bw > 0) { bandwidthSum = bw; eventProperties.push('hasBandwidth'); }
+    const dfr = num(p.droppedFramesRatio, 0);
+    if (dfr > 0) { droppedFramesRatioSum = dfr; eventProperties.push('hasDroppedFramesRatio'); }
+    // longSum on Kaltura's side, so it must be an integer.
+    const lat = Math.round(num(p.networkConnectionOverhead, 0));
+    if (lat > 0) { latencySum = lat; eventProperties.push('hasLatency'); }
+    const seg = num(p.segmentDownloadTime, 0);
+    if (seg > 0) { segmentDownloadTimeSum = seg; eventProperties.push('hasSegmentDownloadTime'); }
+    const man = num(p.manifestDownloadTime, 0);
+    if (man > 0) { manifestDownloadTimeSum = man; eventProperties.push('hasManifestDownloadTime'); }
+  }
+
   // Realtime engagement state from the player's view-event flags
   // (kKavaBase $realtime_engagement counts SoundOn+TabFocused variants as
   // engaged). soundMode/tabMode: 2 = on/focused; screenMode: 1 = fullscreen.
@@ -355,6 +392,8 @@ async function buildRow(p, req) {
     playTimeSum,
     uniquePercentiles,
     bitrateSum, bitrateCount, bufferTimeSum, eventDoubleSum1,
+    bandwidthSum, droppedFramesRatioSum, latencySum,
+    segmentDownloadTimeSum, manifestDownloadTimeSum,
     bufferStarts: eventType === 'bufferStart' ? 1 : 0,
     flavorSwitches: eventType === 'flavorSwitch' ? 1 : 0,
   };
@@ -385,6 +424,13 @@ const METRICS = [
   { type: 'longSum', name: 'flavorSwitches', fieldName: 'flavorSwitches' },
   { type: 'doubleSum', name: 'bufferTimeSum', fieldName: 'bufferTimeSum' },
   { type: 'doubleSum', name: 'eventDoubleSum1', fieldName: 'eventDoubleSum1' },
+  // QoE — longSum for latency (Kaltura aggregates it as a long), doubleSum
+  // for the rest.
+  { type: 'doubleSum', name: 'bandwidthSum', fieldName: 'bandwidthSum' },
+  { type: 'doubleSum', name: 'droppedFramesRatioSum', fieldName: 'droppedFramesRatioSum' },
+  { type: 'longSum',   name: 'latencySum', fieldName: 'latencySum' },
+  { type: 'doubleSum', name: 'segmentDownloadTimeSum', fieldName: 'segmentDownloadTimeSum' },
+  { type: 'doubleSum', name: 'manifestDownloadTimeSum', fieldName: 'manifestDownloadTimeSum' },
   { type: 'hyperUnique', name: 'uniqueUserIds', fieldName: '_userId' },
   { type: 'hyperUnique', name: 'uniqueSessionId', fieldName: '_sessionId' },
 ];
@@ -764,10 +810,89 @@ async function startKafka() {
   console.log(`[receiver] kafka connected (${KAFKA_BROKERS.join(',')}) → topic ${REALTIME_TOPIC}`);
 }
 
+// Historical ingestion through Kafka. Falls back to the batch buffer whenever
+// Kafka is absent or a send fails, so switching Kafka off degrades to the old
+// behaviour instead of losing beacons — Kafka stays optional.
+function publishHistorical(rows) {
+  if (!kafkaProducer) { bufferRows(rows); return; }
+  kafkaProducer.send({
+    topic: HISTORICAL_TOPIC,
+    messages: rows.map((r) => ({ value: JSON.stringify(r) })),
+  }).catch((e) => {
+    console.error(`[receiver] kafka historical send failed, falling back to batch: ${e.message}`);
+    bufferRows(rows);
+  });
+}
+function bufferRows(rows) {
+  for (const r of rows) buffer.push(r);
+  if (buffer.length >= MAX_BUFFER) flush();
+}
+
 function publishRealtime(row) {
   if (!kafkaProducer) return;
   kafkaProducer.send({ topic: REALTIME_TOPIC, messages: [{ value: JSON.stringify(row) }] })
     .catch((e) => console.error(`[receiver] kafka send: ${e.message}`));
+}
+
+// Shared POST helper for the Druid coordinator/overlord APIs. Never rejects:
+// a missing supervisor or compaction config degrades a feature, it must not
+// take the receiver down.
+function druidPost(path, body, label) {
+  return new Promise((resolve) => {
+    const payload = JSON.stringify(body);
+    const u = new URL(DRUID_OVERLORD + path);
+    const r = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
+      (res) => { let d = ''; res.on('data', (c) => (d += c));
+        res.on('end', () => {
+          if (res.statusCode >= 300) console.error(`[receiver] ${label} HTTP ${res.statusCode}: ${d.slice(0, 200)}`);
+          else console.log(`[receiver] ${label} ok`);
+          resolve();
+        }); });
+    r.on('error', (e) => { console.error(`[receiver] ${label}: ${e.message}`); resolve(); });
+    r.write(payload); r.end();
+  });
+}
+
+// Historical ingestion as a single streaming task instead of one batch task per
+// flush. The dataSchema is byte-for-byte the one flush() uses — same dimensions,
+// same metrics, same DAY/HOUR/rollup granularity — so the segments this produces
+// stay compatible with everything already written by the batch path.
+function submitHistoricalSupervisor() {
+  const spec = {
+    type: 'kafka',
+    spec: {
+      dataSchema: {
+        dataSource: DATASOURCE,
+        timestampSpec: { column: '__time', format: 'iso' },
+        dimensionsSpec: { dimensions: DIMENSIONS },
+        metricsSpec: METRICS,
+        granularitySpec: { type: 'uniform', segmentGranularity: 'DAY', queryGranularity: 'HOUR', rollup: true },
+      },
+      ioConfig: {
+        topic: HISTORICAL_TOPIC,
+        inputFormat: { type: 'json' },
+        consumerProperties: { 'bootstrap.servers': KAFKA_BROKERS.join(',') },
+        taskCount: 1, replicas: 1, taskDuration: 'PT1H',
+        useEarliestOffset: true,   // never silently skip beacons produced while Druid restarted
+      },
+      tuningConfig: { type: 'kafka', maxRowsInMemory: 25000 },
+    },
+  };
+  return druidPost('/druid/indexer/v1/supervisor', spec, 'historical supervisor');
+}
+
+// Auto-compaction: the batch path left 52 segments holding 258 rows (5 rows /
+// 2 KB each) on a test install, and every query has to open all of them.
+// skipOffsetFromLatest keeps the last day alone so compaction never fights the
+// segment currently being appended to.
+function submitCompaction() {
+  return druidPost('/druid/coordinator/v1/config/compaction', {
+    dataSource: DATASOURCE,
+    skipOffsetFromLatest: 'P1D',
+    granularitySpec: { segmentGranularity: 'DAY' },
+    tuningConfig: { type: 'index_parallel', maxRowsPerSegment: 5000000 },
+  }, 'compaction config');
 }
 
 // Submit the Druid kafka supervisor (idempotent — same spec re-submission is a
@@ -794,22 +919,8 @@ function submitRealtimeSupervisor() {
       tuningConfig: { type: 'kafka', maxRowsInMemory: 25000 },
     },
   };
-  const post = (path, body, label) => new Promise((resolve) => {
-    const payload = JSON.stringify(body);
-    const u = new URL(DRUID_OVERLORD + path);
-    const r = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
-      (res) => { let d = ''; res.on('data', (c) => (d += c));
-        res.on('end', () => {
-          if (res.statusCode >= 300) console.error(`[receiver] ${label} HTTP ${res.statusCode}: ${d.slice(0, 200)}`);
-          else console.log(`[receiver] ${label} ok`);
-          resolve();
-        }); });
-    r.on('error', (e) => { console.error(`[receiver] ${label}: ${e.message}`); resolve(); });
-    r.write(payload); r.end();
-  });
-  return post('/druid/indexer/v1/supervisor', spec, 'realtime supervisor')
-    .then(() => post(`/druid/coordinator/v1/rules/${REALTIME_DS}`,
+  return druidPost('/druid/indexer/v1/supervisor', spec, 'realtime supervisor')
+    .then(() => druidPost(`/druid/coordinator/v1/rules/${REALTIME_DS}`,
       [{ type: 'loadByPeriod', period: 'P2D', includeFuture: true, tieredReplicants: { _default_tier: 1 } },
        { type: 'dropForever' }], 'realtime retention rules'));
 }
@@ -1128,15 +1239,16 @@ const server = http.createServer((req, res) => {
     try {
       const row = await buildRow(parseParams(req, body), req);
       if (row) {
-        buffer.push(row);
         // One beacon, two rows: the historical datasource carries BOTH names
         // for a view heartbeat. QoE (segment/manifest download time, latency,
         // dropped frames, bandwidth) and the live-style metrics filter on
         // 'view'; sum_view_period filters on 'viewPeriod'. Every metric is
         // eventType-filtered, so the twin cannot double-count anything.
-        if (row.eventType === 'view') buffer.push({ ...row, eventType: 'viewPeriod' });
-        if (buffer.length >= MAX_BUFFER) flush();
-        publishRealtime(row);   // fire-and-forget → Real-Time tab
+        const rows = row.eventType === 'view'
+          ? [row, { ...row, eventType: 'viewPeriod' }]
+          : [row];
+        publishHistorical(rows);   // Kafka when available, batch buffer otherwise
+        publishRealtime(row);      // fire-and-forget → Real-Time tab
       }
     } catch (e) { console.error(`[receiver] handler error: ${e.message}`); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1199,13 +1311,22 @@ async function start() {
       console.error('[receiver] Druid never reachable for seeding — lifecycle/usage collectors disabled to avoid double-counting');
     }
   }
-  // Real-Time streaming: connect the Kafka producer and (re)submit the Druid
-  // supervisor. Failures only disable the Real-Time tab — the historical batch
-  // path above keeps working regardless.
+  // Kafka streaming: one long-running supervisor per datasource replaces the
+  // per-flush batch tasks. If any of this fails the producer stays null and
+  // publishHistorical() falls back to the batch buffer, so analytics keeps
+  // working with Kafka switched off — it is an optimisation, not a dependency.
   if (KAFKA_BROKERS.length) {
     startKafka()
-      .then(() => submitRealtimeSupervisor())
-      .catch((e) => console.error(`[receiver] kafka init failed (Real-Time tab disabled): ${e.message}`));
+      .then(() => Promise.all([
+        submitRealtimeSupervisor(),
+        submitHistoricalSupervisor(),
+        submitCompaction(),
+      ]))
+      .catch((e) => console.error(`[receiver] kafka init failed (batch fallback in use): ${e.message}`));
+  } else {
+    // No Kafka: compaction still matters, the batch path is what created the
+    // fragmentation in the first place.
+    submitCompaction().catch(() => {});
   }
   // Heartbeat: re-register active live streams every minute — Kaltura expires
   // the entry's live status otherwise (real media servers do the same).
