@@ -4,6 +4,7 @@ set -e
 APP_DIR=/opt/kaltura/app
 LOG_DIR=/opt/kaltura/log
 TMP_DIR=/opt/kaltura/tmp
+WEB_DIR=/opt/kaltura/web
 DB_HOST="${DB1_HOST:-mysql}"
 DB_PORT="${DB1_PORT:-3306}"
 DB_USER="${DB1_USER:-kaltura}"
@@ -31,6 +32,8 @@ fi
 mkdir -p \
     "$LOG_DIR/batch" \
     "$TMP_DIR" \
+    "$TMP_DIR/reports" \
+    "$WEB_DIR/tmp/reports" \
     "$APP_DIR/configurations/batch" \
     "$APP_DIR/cache/batch" \
     "$APP_DIR/var/run"
@@ -95,7 +98,7 @@ BATCH_HOSTNAME=$(hostname)
 sed \
     -e "s|@LOG_DIR@|$LOG_DIR|g" \
     -e "s|@BASE_DIR@|$APP_DIR|g" \
-    -e "s|@WEB_DIR@|/opt/kaltura/web|g" \
+    -e "s|@WEB_DIR@|$WEB_DIR|g" \
     -e "s|@SERVICE_URL@|$SERVICE_URL|g" \
     -e "s|@BATCH_URL@|$SERVICE_URL|g" \
     -e "s|@BATCH_PARTNER_ADMIN_SECRET@|$BATCH_SECRET|g" \
@@ -138,6 +141,7 @@ php installPlugins.php >> "$LOG_DIR/batch/installPlugins.log" 2>&1 || true
 chown -R www-data:www-data \
     "$LOG_DIR" \
     "$TMP_DIR" \
+    "$WEB_DIR/tmp/reports" \
     "$APP_DIR/configurations/batch" \
     "$APP_DIR/cache/batch" \
     "$APP_DIR/var/run" \

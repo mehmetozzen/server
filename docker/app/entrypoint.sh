@@ -332,7 +332,7 @@ generate_ini_from_template() {
         -e "s|@REPLACE_PASSWORDS@|true|g" \
         -e "s|@USAGE_TRACKING_OPTIN@|false|g" \
         -e "s|@TRACK_KDPWRAPPER@|false|g" \
-        -e "s|@EXPIRY_IN_SECONDS@|60|g" \
+        -e "s|@EXPIRY_IN_SECONDS@|604800|g" \
         -e "s|@EXCHANGE_NAME@|kaltura|g" \
         -e "s|@RTMP_URL@|rtmp://$WWW_HOST|g" \
         -e "s|@PRIMARY_MEDIA_SERVER_HOST@|$WWW_HOST|g" \
