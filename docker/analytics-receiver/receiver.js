@@ -18,6 +18,7 @@ const http = require('http');
 const crypto = require('crypto');
 const mysql = require('mysql2/promise');
 const geoip = require('geoip-lite');
+const net = require('net');
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const DRUID_OVERLORD   = process.env.DRUID_OVERLORD || 'http://druid-coordinator:8081';
@@ -56,6 +57,11 @@ const MAX_SEEN_PER_SESSION = 5000;
 // Per-IP beacon rate limit (sliding 60s window). Generous for real players
 // (~6 beacons/min steady state), tight enough to blunt poisoning/DoS loops.
 const RATE_LIMIT_PER_MIN = parseInt(process.env.RATE_LIMIT_PER_MIN || '600', 10);
+// Same memcache the app reads through the cache.ini 'geoCoordinates' layer.
+// Empty = skip the writes (the map simply stays unplotted, nothing else breaks).
+const MEMCACHE_HOST    = process.env.MEMCACHE_HOST || '';
+const MEMCACHE_PORT    = parseInt(process.env.MEMCACHE_PORT || '11211', 10);
+const MAX_COORD_KEYS   = parseInt(process.env.MAX_COORD_KEYS || '20000', 10);
 
 // ── Live auth config ─────────────────────────────────────────────────────────
 // LIVE_PUBLISH_TOKEN: shared secret for manual live streams. FAIL-CLOSED: when
@@ -121,6 +127,320 @@ const EVENT_TYPE_MAP = {
 
 // Kaltura KalturaMediaType int -> string
 const MEDIA_TYPE_MAP = { 1: 'VIDEO', 2: 'IMAGE', 5: 'AUDIO' };
+
+// ── Country code → the name Kaltura stores ───────────────────────────────────
+// geoip-lite answers with an ISO 3166-1 alpha-2 code, but the report layer
+// treats location.country as a long name: MAP_OVERLAY_COUNTRY derives object_id
+// from it with kKavaCountryCodes::toShortName (long → short), so storing the
+// code left object_id empty and broke the drill-down, and the table read "US"
+// instead of "United States". Generated from kKavaCountryCodes::$shortToLong;
+// every name here has a reverse entry, so the round trip always resolves.
+const COUNTRY_NAMES = {
+  AD: "Andorra",
+  AE: "United Arab Emirates",
+  AF: "Afghanistan",
+  AG: "Antigua and Barbuda",
+  AI: "Anguilla",
+  AL: "Albania",
+  AM: "Armenia",
+  AO: "Angola",
+  AQ: "Antarctica",
+  AR: "Argentina",
+  AS: "American Samoa",
+  AT: "Austria",
+  AU: "Australia",
+  AW: "Aruba",
+  AX: "Aland Islands",
+  AZ: "Azerbaijan",
+  BA: "Bosnia and Herzegovina",
+  BB: "Barbados",
+  BD: "Bangladesh",
+  BE: "Belgium",
+  BF: "Burkina Faso",
+  BG: "Bulgaria",
+  BH: "Bahrain",
+  BI: "Burundi",
+  BJ: "Benin",
+  BL: "Saint Barthelemy",
+  BM: "Bermuda",
+  BN: "Brunei Darussalam",
+  BO: "Bolivia, Plurinational State of",
+  BQ: "Bonaire, Sint Eustatius and Saba",
+  BR: "Brazil",
+  BS: "Bahamas",
+  BT: "Bhutan",
+  BV: "Bouvet Island",
+  BW: "Botswana",
+  BY: "Belarus",
+  BZ: "Belize",
+  CA: "Canada",
+  CC: "Cocos (Keeling) Islands",
+  CD: "Congo, The Democratic Republic of The",
+  CF: "Central African Republic",
+  CG: "Congo",
+  CH: "Switzerland",
+  CI: "Cote D'ivoire",
+  CK: "Cook Islands",
+  CL: "Chile",
+  CM: "Cameroon",
+  CN: "China",
+  CO: "Colombia",
+  CR: "Costa Rica",
+  CU: "Cuba",
+  CV: "Cabo Verde",
+  CW: "Curacao",
+  CX: "Christmas Island",
+  CY: "Cyprus",
+  CZ: "Czech Republic",
+  DE: "Germany",
+  DJ: "Djibouti",
+  DK: "Denmark",
+  DM: "Dominica",
+  DO: "Dominican Republic",
+  DZ: "Algeria",
+  EC: "Ecuador",
+  EE: "Estonia",
+  EG: "Egypt",
+  EH: "Western Sahara",
+  ER: "Eritrea",
+  ES: "Spain",
+  ET: "Ethiopia",
+  FI: "Finland",
+  FJ: "Fiji",
+  FK: "Falkland Islands (Malvinas)",
+  FM: "Micronesia, Federated States of",
+  FO: "Faroe Islands",
+  FR: "France",
+  GA: "Gabon",
+  GB: "United Kingdom",
+  GD: "Grenada",
+  GE: "Georgia",
+  GF: "French Guiana",
+  GG: "Guernsey",
+  GH: "Ghana",
+  GI: "Gibraltar",
+  GL: "Greenland",
+  GM: "Gambia",
+  GN: "Guinea",
+  GP: "Guadeloupe",
+  GQ: "Equatorial Guinea",
+  GR: "Greece",
+  GS: "South Georgia and The South Sandwich Islands",
+  GT: "Guatemala",
+  GU: "Guam",
+  GW: "Guinea-Bissau",
+  GY: "Guyana",
+  HK: "Hong Kong",
+  HM: "Heard Island and Mcdonald Islands",
+  HN: "Honduras",
+  HR: "Croatia",
+  HT: "Haiti",
+  HU: "Hungary",
+  ID: "Indonesia",
+  IE: "Ireland",
+  IL: "Israel",
+  IM: "Isle of Man",
+  IN: "India",
+  IO: "British Indian Ocean Territory",
+  IQ: "Iraq",
+  IR: "Iran, Islamic Republic of",
+  IS: "Iceland",
+  IT: "Italy",
+  JE: "Jersey",
+  JM: "Jamaica",
+  JO: "Jordan",
+  JP: "Japan",
+  KE: "Kenya",
+  KG: "Kyrgyzstan",
+  KH: "Cambodia",
+  KI: "Kiribati",
+  KM: "Comoros",
+  KN: "Saint Kitts and Nevis",
+  KP: "Korea, Democratic People's Republic of",
+  KR: "Korea, Republic of",
+  KW: "Kuwait",
+  KY: "Cayman Islands",
+  KZ: "Kazakhstan",
+  LA: "Lao People's Democratic Republic",
+  LB: "Lebanon",
+  LC: "Saint Lucia",
+  LI: "Liechtenstein",
+  LK: "Sri Lanka",
+  LR: "Liberia",
+  LS: "Lesotho",
+  LT: "Lithuania",
+  LU: "Luxembourg",
+  LV: "Latvia",
+  LY: "Libya",
+  MA: "Morocco",
+  MC: "Monaco",
+  MD: "Moldova, Republic of",
+  ME: "Montenegro",
+  MF: "Saint Martin (French Part)",
+  MG: "Madagascar",
+  MH: "Marshall Islands",
+  MK: "Macedonia, The Former Yugoslav Republic of",
+  ML: "Mali",
+  MM: "Myanmar",
+  MN: "Mongolia",
+  MO: "Macao",
+  MP: "Northern Mariana Islands",
+  MQ: "Martinique",
+  MR: "Mauritania",
+  MS: "Montserrat",
+  MT: "Malta",
+  MU: "Mauritius",
+  MV: "Maldives",
+  MW: "Malawi",
+  MX: "Mexico",
+  MY: "Malaysia",
+  MZ: "Mozambique",
+  NA: "Namibia",
+  NC: "New Caledonia",
+  NE: "Niger",
+  NF: "Norfolk Island",
+  NG: "Nigeria",
+  NI: "Nicaragua",
+  NL: "Netherlands",
+  NO: "Norway",
+  NP: "Nepal",
+  NR: "Nauru",
+  NU: "Niue",
+  NZ: "New Zealand",
+  OM: "Oman",
+  PA: "Panama",
+  PE: "Peru",
+  PF: "French Polynesia",
+  PG: "Papua New Guinea",
+  PH: "Philippines",
+  PK: "Pakistan",
+  PL: "Poland",
+  PM: "Saint Pierre and Miquelon",
+  PN: "Pitcairn",
+  PR: "Puerto Rico",
+  PS: "Palestine, State of",
+  PT: "Portugal",
+  PW: "Palau",
+  PY: "Paraguay",
+  QA: "Qatar",
+  RE: "Reunion",
+  RO: "Romania",
+  RS: "Serbia",
+  RU: "Russian Federation",
+  RW: "Rwanda",
+  SA: "Saudi Arabia",
+  SB: "Solomon Islands",
+  SC: "Seychelles",
+  SD: "Sudan",
+  SE: "Sweden",
+  SG: "Singapore",
+  SH: "Saint Helena, Ascension and Tristan Da Cunha",
+  SI: "Slovenia",
+  SJ: "Svalbard and Jan Mayen",
+  SK: "Slovakia",
+  SL: "Sierra Leone",
+  SM: "San Marino",
+  SN: "Senegal",
+  SO: "Somalia",
+  SR: "Suriname",
+  SS: "South Sudan",
+  ST: "Sao Tome and Principe",
+  SV: "El Salvador",
+  SX: "Sint Maarten (Dutch Part)",
+  SY: "Syrian Arab Republic",
+  SZ: "Swaziland",
+  TC: "Turks and Caicos Islands",
+  TD: "Chad",
+  TF: "French Southern Territories",
+  TG: "Togo",
+  TH: "Thailand",
+  TJ: "Tajikistan",
+  TK: "Tokelau",
+  TL: "Timor-Leste",
+  TM: "Turkmenistan",
+  TN: "Tunisia",
+  TO: "Tonga",
+  TR: "Turkey",
+  TT: "Trinidad and Tobago",
+  TV: "Tuvalu",
+  TW: "Taiwan, Province of China",
+  TZ: "Tanzania, United Republic of",
+  UA: "Ukraine",
+  UG: "Uganda",
+  UK: "United Kingdom",
+  UM: "United States Minor Outlying Islands",
+  US: "United States",
+  UY: "Uruguay",
+  UZ: "Uzbekistan",
+  VA: "Holy See",
+  VC: "Saint Vincent and The Grenadines",
+  VE: "Venezuela, Bolivarian Republic of",
+  VG: "Virgin Islands, British",
+  VI: "Virgin Islands, U.S.",
+  VN: "Viet Nam",
+  VU: "Vanuatu",
+  WF: "Wallis and Futuna",
+  WS: "Samoa",
+  YE: "Yemen",
+  YT: "Mayotte",
+  ZA: "South Africa",
+  ZM: "Zambia",
+  ZW: "Zimbabwe"
+};
+
+// ── Geo coordinates for the analytics map ────────────────────────────────────
+// kKavaReportsMgr::getCoordinates turns a location into the "lat/lon" string
+// the map plots from, by reading memcache under coord_<key>. Nothing in the
+// open-source distribution ever writes those keys, so the coordinates column
+// came back empty for every row — and the front-end skips any row whose
+// coordinates does not split into two, leaving a map with no points at all
+// where every country hovers as N/A. We keep the mean of the coordinates we
+// actually observed per location and rewrite them on each flush, so the keys
+// come back on their own after a memcache restart.
+const coordAcc = new Map();
+
+// coord_ + lowercase with everything outside [a-z0-9_] replaced: the transform
+// kKavaBase::getCoordinatesKey applies, over the '|' that the report framework
+// joins multi-dimension keys with.
+const coordKey = (parts) =>
+  'coord_' + parts.join('|').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+
+// The three levels mirror MAP_OVERLAY_COUNTRY / _REGION / _CITY, which ask for
+// country, country|region and country|region|city — empty members included,
+// since the key is built from the stored values whatever they are.
+function recordCoordinates(country, region, city, ll) {
+  if (!country || !Array.isArray(ll)) return;
+  const [lat, lon] = ll;
+  if (typeof lat !== 'number' || typeof lon !== 'number') return;
+  for (const parts of [[country], [country, region], [country, region, city]]) {
+    const key = coordKey(parts);
+    let acc = coordAcc.get(key);
+    if (!acc) {
+      if (coordAcc.size >= MAX_COORD_KEYS) return;
+      acc = { latSum: 0, lonSum: 0, n: 0 };
+      coordAcc.set(key, acc);
+    }
+    acc.latSum += lat; acc.lonSum += lon; acc.n += 1;
+  }
+}
+
+function flushCoordinates() {
+  if (!MEMCACHE_HOST || !coordAcc.size) return;
+  const sock = net.connect(MEMCACHE_PORT, MEMCACHE_HOST);
+  sock.setTimeout(5000);
+  const close = () => { try { sock.end(); } catch (e) { /* already gone */ } };
+  sock.on('error', (e) => console.error(`[receiver] geo coordinates: ${e.message}`));
+  sock.on('timeout', close);
+  sock.on('connect', () => {
+    let payload = '';
+    for (const [key, a] of coordAcc) {
+      // "lat/lon" — kKavaBase::parseCoordinates splits on the slash.
+      const v = (a.latSum / a.n).toFixed(4) + '/' + (a.lonSum / a.n).toFixed(4);
+      payload += `set ${key} 0 0 ${Buffer.byteLength(v)}\r\n${v}\r\n`;
+    }
+    sock.write(payload, close);
+  });
+}
 
 // ── Minimal User-Agent parser (no deps) → browser / os / device ──────────────
 // These names are a fixed vocabulary, not free text. analytics-front-end holds
@@ -286,6 +606,10 @@ async function buildRow(p, req) {
   // another tenant's owner/categories onto forged rows).
   if (meta.dbChecked && meta.partnerId !== partnerId) return null;
   const geo = geoip.lookup(clientIp) || null;
+  const geoCountry = geo ? (COUNTRY_NAMES[geo.country] || geo.country || '') : '';
+  const geoRegion  = geo ? (geo.region || '') : '';
+  const geoCity    = geo ? (geo.city || '') : '';
+  if (geo) recordCoordinates(geoCountry, geoRegion, geoCity, geo.ll);
   const position = num(p.position, 0);
 
   // ── Derived play-time + percentile (for Minutes Viewed, completion, heatmap) ──
@@ -382,9 +706,9 @@ async function buildRow(p, req) {
     mediaType: meta.mediaType,                  // real media type from the entry
     playbackType: PLAYBACK_TYPES.has(String(p.playbackType)) ? String(p.playbackType) : 'vod',
     categories: meta.categories,                // multi-value
-    'location.country': geo ? geo.country : '',
-    'location.region':  geo ? (geo.region || '') : '',
-    'location.city':    geo ? (geo.city || '') : '',
+    'location.country': geoCountry,
+    'location.region':  geoRegion,
+    'location.city':    geoCity,
     'userAgent.browser': ua.browser,
     'userAgent.browserFamily': ua.browserFamily,
     'userAgent.operatingSystem': ua.os,
@@ -1311,6 +1635,7 @@ async function start() {
     console.error('[receiver] MySQL never reachable after 60 attempts — enrichment AND live orchestration disabled (Contributors/categories/geo empty, live entries will not register)');
   }
   setInterval(flush, FLUSH_INTERVAL_MS);
+  setInterval(flushCoordinates, FLUSH_INTERVAL_MS).unref();
   // Entry-lifecycle (Contributors) + usage (storage/transcoding) collectors:
   // seed their state from Druid FIRST — retry until Druid answers, because
   // seeding empty against a not-yet-ready Druid would re-ingest everything and
