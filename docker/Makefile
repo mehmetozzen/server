@@ -9,7 +9,13 @@
 MAKEFILE_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 ROOT         := $(abspath $(MAKEFILE_DIR)/..)
 CONF         := $(MAKEFILE_DIR)/kaltura.conf
-COMPOSE      := docker compose --env-file $(CONF) -f $(MAKEFILE_DIR)/docker-compose.yml
+# Analytics (Druid + Kafka) rides the "analytics" compose profile. A config
+# written before that switch existed has no COMPOSE_PROFILES line at all, and
+# an absent profile means OFF to compose — so upgrading a running host would
+# silently drop its whole analytics stack. Default it ON when the key is
+# missing; an explicit COMPOSE_PROFILES (set, or empty to disable) always wins.
+PROFILE_FLAG := $(if $(shell grep -qE '^COMPOSE_PROFILES=' $(CONF) 2>/dev/null && echo set),,--profile analytics)
+COMPOSE      := docker compose --env-file $(CONF) $(PROFILE_FLAG) -f $(MAKEFILE_DIR)/docker-compose.yml
 
 # Core = everything except the Druid analytics stack (for low-RAM hosts).
 # analytics-receiver is CORE, not Druid: live-rtmp's on_publish auth callback
@@ -46,14 +52,15 @@ build: check-config ## Build all locally-built images (cached layers make this f
 	$(COMPOSE) build
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
-up: check-config ## Start the full stack (Kaltura + Druid analytics)
+up: check-config ## Start the stack (analytics included unless COMPOSE_PROFILES is commented out in kaltura.conf)
 	$(COMPOSE) up -d
 
-core-up: check-config ## Start without Druid (low-RAM hosts; analytics disabled, live still works)
+core-up: check-config ## Start without analytics regardless of kaltura.conf (low-RAM hosts; live and VOD still work)
 	$(COMPOSE) up -d $(CORE_SERVICES)
 
-realtime-up: check-config ## Start the full stack + Kafka Real-Time analytics (set KAFKA_BROKERS=kafka:9092 first)
-	$(COMPOSE) --profile realtime up -d
+# Kept as an alias: analytics (Druid + Kafka) is on by default now, so this is
+# just `up`. Retained so existing runbooks and muscle memory keep working.
+realtime-up: up ## Alias for `up` (analytics is enabled by default)
 
 start: ## Start previously-stopped containers
 	$(COMPOSE) start

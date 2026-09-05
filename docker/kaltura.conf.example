@@ -58,7 +58,11 @@ LOG_LEVEL=6
 # ── Outgoing e-mail (password reset, invitations, bulk-upload results) ──
 # Without SMTP_HOST all outgoing mail is DISABLED (a WARN is logged at boot).
 # Point it at your relay (e.g. smtp.eu.mailgun.org) or, for dev, at a local
-# mailpit/mailhog container with SMTP_TLS=off.
+# mailpit/mailhog container with SMTP_TLS=off. Such a sink is deliberately NOT
+# part of this stack — a catcher left running on a live host silently swallows
+# password-reset mail. Run one alongside only while testing:
+#   docker run -d --name mailpit --network docker_default -p 127.0.0.1:8025:8025 axllent/mailpit
+# then set SMTP_HOST=mailpit SMTP_PORT=1025 SMTP_TLS=off SMTP_STARTTLS=off
 SMTP_HOST=
 SMTP_PORT=587
 SMTP_TLS=on
@@ -97,9 +101,16 @@ LIVE_CB_SECRET=
 LIVE_PARTNER_ID=
 
 # ── Analytics ─────────────────────────────────────────────────
-# Real-Time analytics (live viewer stats) — opt-in, ~0.5-0.8GB RAM.
-# Set to kafka:9092 AND run `make -C docker realtime-up` to enable.
-KAFKA_BROKERS=
+# The whole analytics backend: 7 Druid services + Kafka, ~4.2 GB RAM.
+# Kafka's only consumer is Druid, so the two are one unit and this single
+# switch starts or stops both. Comment it out to run without analytics —
+# VOD, live streaming, KMC and search are unaffected, only the analytics
+# tabs go empty and the receiver settles into its batch fallback.
+COMPOSE_PROFILES=analytics
+
+# Override only to point at a Kafka outside this stack. Left unset it
+# defaults to the bundled broker (kafka:9092) whenever analytics is on.
+# KAFKA_BROKERS=
 
 # Legacy DWH schema load on first boot. It has NO ETL feeding it in this
 # stack (analytics is Druid-only) — the schema only keeps legacy DWH reports

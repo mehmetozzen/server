@@ -177,6 +177,7 @@ services:
   # nano-quickstart path needs perl/supervise which the slim image lacks).
   druid-postgres:
     <<: *common
+    profiles: ["analytics"]
     image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
     platform: linux/amd64
     container_name: kaltura_druid_postgres
@@ -195,6 +196,7 @@ services:
 
   druid-zookeeper:
     <<: *common
+    profiles: ["analytics"]
     image: zookeeper:3.8@sha256:b601a8c4403f16eefb4e21e1ab14ba1e723c0b2ae923303e4433afb385e8372e
     platform: linux/amd64
     container_name: kaltura_druid_zookeeper
@@ -204,6 +206,7 @@ services:
 
   druid-coordinator:
     <<: *common
+    profiles: ["analytics"]
     image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_coordinator
@@ -223,6 +226,7 @@ services:
 
   druid-broker:
     <<: *common
+    profiles: ["analytics"]
     image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_broker
@@ -246,6 +250,7 @@ services:
 
   druid-historical:
     <<: *common
+    profiles: ["analytics"]
     image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_historical
@@ -261,6 +266,7 @@ services:
 
   druid-middlemanager:
     <<: *common
+    profiles: ["analytics"]
     image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_middlemanager
@@ -276,6 +282,7 @@ services:
 
   druid-router:
     <<: *common
+    profiles: ["analytics"]
     image: apache/druid:30.0.1@sha256:ec80de69dcb752b6f366959c2afd96236f684d55c7199a92fef45420c0ad6e6d
     platform: linux/amd64
     container_name: kaltura_druid_router
@@ -290,13 +297,12 @@ services:
     ports:
       - "127.0.0.1:8888:8888"   # host-only web console: reach it via SSH tunnel, never the public internet
 
-  # ── Kafka (KRaft, single node) — Real-Time analytics streaming (OPT-IN) ─────
-  # Feeds ONLY the Real-Time tab's live viewer stats (player-events-realtime).
-  # Everything else — Audience/Engagement/Contributors/Usage and the live
-  # "Broadcasting Now" list — works without it. Costs ~0.5-0.8 GB RAM (broker +
-  # the Druid supervisor task), so it is gated behind the "realtime" profile and
-  # does NOT start by default. To enable: set KAFKA_BROKERS=kafka:9092 (in
-  # kaltura.conf) and run `docker compose --profile realtime up -d`.
+  # ── Kafka (KRaft, single node) — analytics ingestion transport ──────────────
+  # Both topics are consumed by Druid kafka supervisors, so Druid is Kafka's
+  # ONLY consumer — running one without the other is meaningless. They share the
+  # "analytics" profile for exactly that reason: enabling analytics brings up
+  # Druid and Kafka together, and disabling it removes both (~4.2 GB RAM).
+  # Streaming replaced the per-flush batch tasks that cost 736% CPU (now 41%).
   kafka:
     <<: *common
     image: apache/kafka:3.8.0@sha256:c89f315cff967322c5d2021434b32271393cb193aa7ec1d43e97341924e57069
@@ -308,7 +314,7 @@ services:
     platform: linux/amd64
     container_name: kaltura_kafka
     networks: { default: { ipv4_address: 172.31.83.20 } }
-    profiles: ["realtime"]
+    profiles: ["analytics"]
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -350,7 +356,10 @@ services:
     environment:
       DRUID_OVERLORD: http://druid-coordinator:8081
       DRUID_BROKER: http://druid-broker:8082
-      KAFKA_BROKERS: ${KAFKA_BROKERS:-}   # empty = Real-Time streaming OFF (opt-in; set to kafka:9092 to enable)
+      # Defaulted, not opt-in: the broker ships in the same profile, so the only
+      # way it is absent is analytics being switched off entirely — and then
+      # publishHistorical() degrades to the batch buffer on its own.
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
       # Only the fallback batch path uses this — with KAFKA_BROKERS set the rows
       # stream through a supervisor instead. 15s produced one Druid index task
       # every 15 seconds, each a fresh JVM peon regardless of row count.

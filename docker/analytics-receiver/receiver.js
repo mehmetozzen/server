@@ -1329,6 +1329,7 @@ async function start() {
     // up in two, so the one-shot version silently ran in batch fallback until
     // someone recreated it by hand. Observed exactly that on a real host.
     // Each retry is harmless — supervisor submission is idempotent.
+    let kafkaRetryMs = 30000;
     const connectKafka = () => {
       startKafka()
         .then(() => Promise.all([
@@ -1337,8 +1338,15 @@ async function start() {
           submitCompaction(),
         ]))
         .catch((e) => {
-          console.error(`[receiver] kafka not ready (${e.message}) — batch fallback in use, retrying in 30s`);
-          setTimeout(connectKafka, 30000).unref();
+          // Back off instead of hammering: KAFKA_BROKERS now defaults to the
+          // bundled broker, so a permanently absent Kafka means analytics was
+          // switched off entirely — a fixed 30s retry would log forever on every
+          // core-only host. Doubling to a 10-minute ceiling still reconnects
+          // within two tries on the normal cold-start race (Kafka needs ~40s),
+          // and the loop ends for good the moment startKafka() resolves.
+          console.error(`[receiver] kafka not ready (${e.message}) — batch fallback in use, retrying in ${Math.round(kafkaRetryMs / 1000)}s`);
+          setTimeout(connectKafka, kafkaRetryMs).unref();
+          kafkaRetryMs = Math.min(kafkaRetryMs * 2, 600000);
         });
     };
     connectKafka();
