@@ -123,23 +123,39 @@ const EVENT_TYPE_MAP = {
 const MEDIA_TYPE_MAP = { 1: 'VIDEO', 2: 'IMAGE', 5: 'AUDIO' };
 
 // ── Minimal User-Agent parser (no deps) → browser / os / device ──────────────
+// These names are a fixed vocabulary, not free text. analytics-front-end holds
+// its own allow-lists (device: Computer/Mobile/Tablet/Game console/Digital
+// media receiver) and rewrites anything outside them to OTHER for display, then
+// sends that literal back as deviceIn — so an off-vocabulary name both loses
+// its icon and makes the Filter Device Type chip answer No Data Found. Note
+// "Microsoft Edge" rather than "Edge", and "Mac OS X" rather than "macOS".
 function parseUA(ua) {
   ua = ua || '';
-  let browser = 'Other', browserFamily = 'Other', os = 'Other', osFamily = 'Other', device = 'Desktop';
-  if (/Edg\//.test(ua)) browser = browserFamily = 'Edge';
+  let browser = 'Other', browserFamily = 'Other', os = 'Other', osFamily = 'Other', device = 'Other';
+  if (/Edg(e|A|iOS)?\//.test(ua)) browser = browserFamily = 'Microsoft Edge';
   else if (/OPR\/|Opera/.test(ua)) browser = browserFamily = 'Opera';
+  else if (/Vivaldi/.test(ua)) browser = browserFamily = 'Vivaldi';
   else if (/Chrome\//.test(ua) && !/Chromium/.test(ua)) browser = browserFamily = 'Chrome';
   else if (/Chromium/.test(ua)) { browser = 'Chromium'; browserFamily = 'Chrome'; }
   else if (/Firefox\//.test(ua)) browser = browserFamily = 'Firefox';
   else if (/Version\/.*Safari/.test(ua)) browser = browserFamily = 'Safari';
   else if (/MSIE|Trident/.test(ua)) browser = browserFamily = 'Internet Explorer';
-  if (/Windows NT/.test(ua)) os = osFamily = 'Windows';
-  else if (/Mac OS X/.test(ua) && !/iPhone|iPad/.test(ua)) os = osFamily = 'macOS';
+  else if (/AppleWebKit/.test(ua)) browser = browserFamily = 'Apple WebKit';
+  if (/PlayStation/.test(ua)) os = osFamily = 'Sony Playstation';
+  else if (/Xbox/.test(ua)) os = osFamily = 'Xbox';
+  else if (/CrOS/.test(ua)) os = osFamily = 'Chrome OS';
+  else if (/Windows NT/.test(ua)) os = osFamily = 'Windows';
+  else if (/Mac OS X/.test(ua) && !/iPhone|iPad|iPod/.test(ua)) os = osFamily = 'Mac OS X';
   else if (/Android/.test(ua)) os = osFamily = 'Android';
   else if (/iPhone|iPad|iPod/.test(ua)) os = osFamily = 'iOS';
+  else if (/Ubuntu/.test(ua)) os = osFamily = 'Ubuntu';
   else if (/Linux/.test(ua)) os = osFamily = 'Linux';
-  if (/iPad|Tablet/.test(ua)) device = 'Tablet';
-  else if (/Mobi|iPhone|Android.*Mobile/.test(ua)) device = 'Mobile';
+  if (!ua) device = 'Other';
+  else if (/PlayStation|Xbox|Nintendo/.test(ua)) device = 'Game console';
+  else if (/AppleTV|Apple TV|Roku|CrKey|GoogleTV|Google TV|SMART-TV|SmartTV|Tizen|[Ww]eb[0O]S|HbbTV|BRAVIA|AFT[A-Z]/.test(ua)) device = 'Digital media receiver';
+  else if (/iPad|Tablet|Android(?!.*Mobile)/.test(ua)) device = 'Tablet';
+  else if (/Mobi|iPhone|iPod/.test(ua)) device = 'Mobile';
+  else device = 'Computer';
   return { browser, browserFamily, os, osFamily, device };
 }
 
