@@ -694,7 +694,6 @@ SQL
     if [ -f "$DEPLOY_V2" ]; then
         for UICONF_INI in \
             "$APP_DIR/apps/kmcng/latest/deploy/config.ini" \
-            "$APP_DIR/apps/kmcng/v7.20.0/deploy/config.ini" \
             "$APP_DIR/apps/studio/latest/studio.ini" \
             "$APP_DIR/apps/liveanalytics/latest/deploy/config.ini" \
             "$WEB_DIR/flash/kmc/latest/config.ini"; do

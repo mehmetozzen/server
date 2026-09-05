@@ -47,6 +47,20 @@ const RECORD_DISABLED    = 0;
 const RECORD_APPENDED    = 1;
 const RECORD_PER_SESSION = 2;
 
+// Sweep staged chunks Kaltura has finished with. appendRecording copies the
+// file into the recorded entry synchronously (ingestAsset, shouldCopy=true) but
+// the ConvertLiveSegment job reads the staged path later and asynchronously, so
+// the cron cannot delete on success and Kaltura never does — every recording
+// leaked its full size into tmp/convert. The job runs within minutes; anything
+// older than STAGE_TTL_S is done. Only our own "<entry>_<idx>-<stamp>" names
+// are touched: tmp/convert is Kaltura's shared uploaded_segment_destination.
+$STAGE_TTL_S = 2 * 3600;
+foreach (glob("$STAGE_DIR/*") ?: [] as $stale) {
+    if (!is_file($stale) || time() - filemtime($stale) <= $STAGE_TTL_S) continue;
+    if (!preg_match('/^\d+_[A-Za-z0-9]+_\d+-\d{4}-\d{2}-\d{2}-\d{6}\.(flv|mp4)$/', basename($stale))) continue;
+    if (@unlink($stale)) echo date('c') . " swept staged chunk " . basename($stale) . "\n";
+}
+
 $files = glob("$REC_DIR/*.flv") ?: [];
 $ready = array_filter($files, fn($f) => time() - filemtime($f) > $SETTLE_S && filesize($f) > 0);
 if (!$ready) {
@@ -170,11 +184,27 @@ foreach ($ready as $file) {
                 echo date('c') . " ERROR $base: cannot create $STAGE_DIR — will retry\n";
                 continue;
             }
-            $staged = "$STAGE_DIR/$base.flv";
-            if (!rename($file, $staged)) {
-                echo date('c') . " ERROR $base: cannot stage into $STAGE_DIR — will retry\n";
+            // Remux to MP4 first. appendRecording hands the file straight to
+            // ingestAsset, which stores it on the recorded entry as-is and takes
+            // the playback extension from it — and the packager cannot serve an
+            // FLV, so a recording ingested as .flv answers 404 and the entry is
+            // unplayable. A real Wowza never hits this because it records MP4
+            // chunks; nginx-rtmp only writes FLV. -c copy is a container swap,
+            // no re-encode, so the cost is I/O.
+            //
+            // The bug hid behind the append case: two or more sessions trigger
+            // Kaltura's concat job, whose output happens to be MP4, so only
+            // single-session recordings — the common case — were broken.
+            $staged = "$STAGE_DIR/$base.mp4";
+            exec('ffmpeg -y -hide_banner -loglevel error -i ' . escapeshellarg($file)
+                . ' -c copy -movflags +faststart ' . escapeshellarg($staged) . ' 2>&1', $out, $rc);
+            if ($rc !== 0 || !file_exists($staged) || filesize($staged) === 0) {
+                @unlink($staged);
+                echo date('c') . " ERROR $base: remux to mp4 failed ("
+                    . implode(' ', array_slice($out, 0, 2)) . ") — will retry\n";
                 continue;
             }
+            unlink($file);
             // The app runs as www-data and has to read what this cron wrote.
             @chmod($staged, 0644);
 
@@ -203,6 +233,9 @@ foreach ($ready as $file) {
                     $recordStatus === RECORD_APPENDED ? 'append' : 'per-session', $partnerId);
             } catch (Exception $ex) {
                 // Put it back so the next run retries instead of losing the take.
+                // Renaming the mp4 to the original .flv name is fine: the next
+                // run remuxes it again, and ffmpeg reads the container it finds
+                // rather than trusting the extension.
                 if (file_exists($staged)) @rename($staged, $file);
                 echo date('c') . " ERROR appendRecording $base: {$ex->getMessage()} — will retry\n";
             }

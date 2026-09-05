@@ -23,14 +23,30 @@ RUN apt-get update && apt-get install -y \
     msmtp-mta \
     && rm -rf /var/lib/apt/lists/*
 
-ARG KMCNG_VERSION=v7.20.0
+# KMC is built from our own fork: several sections it exposes have no working
+# backend here (Rooms needs Newrow; DVR, Preview Mode and Low Latency need the
+# Live Packager) and none of them can be switched off by a partner permission,
+# so the only place to remove them is the app itself. The fork's release
+# workflow produces the same bundle shape as Kaltura's, so nothing below
+# changes. Point KMCNG_REPO back at kaltura/kmc-ng for a stock console.
+ARG KMCNG_REPO=mehmetozzen/kmc-ng
+ARG KMCNG_VERSION=v7.20.0-mn.1
+# The directory name is NOT the release tag. kmcngAction.class.php builds the
+# path as /apps/kmcng/<kmcng_version>/ straight from configurations/base.ini, so
+# a directory named after the fork's tag makes it read a file that is not there
+# and answer "KMC currently unavailable" — with the real reason only in a
+# KalturaLog::warning. deploy/config.ini and the ui_conf rows are keyed on the
+# same upstream version, so the fork tag stays a packaging detail; the marker
+# file records which build actually landed.
+ARG KMCNG_DEPLOY_VERSION=v7.20.0
 RUN mkdir -p /opt/kaltura/apps/kmcng && \
-    curl -fsSL "https://github.com/kaltura/kmc-ng/releases/download/${KMCNG_VERSION}/kmc-ng-${KMCNG_VERSION}.zip" \
+    curl -fsSL "https://github.com/${KMCNG_REPO}/releases/download/${KMCNG_VERSION}/kmc-ng-${KMCNG_VERSION}.zip" \
         -o /tmp/kmcng.zip && \
     unzip -q /tmp/kmcng.zip -d /tmp/kmcng_extract && \
     INNER=$(find /tmp/kmcng_extract -maxdepth 2 -name "index.html" | head -1 | xargs dirname) && \
-    mv "$INNER" /opt/kaltura/apps/kmcng/${KMCNG_VERSION} && \
-    ln -s /opt/kaltura/apps/kmcng/${KMCNG_VERSION} /opt/kaltura/apps/kmcng/latest && \
+    mv "$INNER" /opt/kaltura/apps/kmcng/${KMCNG_DEPLOY_VERSION} && \
+    ln -s /opt/kaltura/apps/kmcng/${KMCNG_DEPLOY_VERSION} /opt/kaltura/apps/kmcng/latest && \
+    echo "${KMCNG_REPO} ${KMCNG_VERSION}" > /opt/kaltura/apps/kmcng/${KMCNG_DEPLOY_VERSION}/.build && \
     rm -rf /tmp/kmcng.zip /tmp/kmcng_extract
 
 ARG STUDIO_VERSION=v2.2.3
@@ -60,11 +76,11 @@ RUN mkdir -p /opt/kaltura/apps/studioV3 && \
 # so the Share & Embed preview works in fully local environments.
 RUN curl -sL "https://static.kaltura.com/content/static/player-scripts/thumbnail-embed.js" \
         -o /tmp/thumbnail-embed.js \
-    && cp /tmp/thumbnail-embed.js /opt/kaltura/apps/kmcng/${KMCNG_VERSION}/public/thumbnail-embed.js \
+    && cp /tmp/thumbnail-embed.js /opt/kaltura/apps/kmcng/${KMCNG_DEPLOY_VERSION}/public/thumbnail-embed.js \
     && rm /tmp/thumbnail-embed.js \
     && sed -i \
         's|https://static\.kaltura\.com/content/static/player-scripts/thumbnail-embed\.js|thumbnail-embed.js|g' \
-        /opt/kaltura/apps/kmcng/${KMCNG_VERSION}/public/playerWrapper.html
+        /opt/kaltura/apps/kmcng/${KMCNG_DEPLOY_VERSION}/public/playerWrapper.html
 
 # Placeholder pages for analytics sub-apps that require external backends (Druid/Kanalony).
 # Without these, KMC NG loads Apache 404 inside its iframe.
