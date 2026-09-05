@@ -1066,9 +1066,15 @@ async function registerLive(name, entry) {
   await kalturaApi({ service: 'serverNode', action: 'reportStatus', ks, hostName: LIVE_HOSTNAME,
     'serverNode:objectType': 'KalturaWowzaMediaServerNode',
     'serverNode:hostName': LIVE_HOSTNAME, 'serverNode:name': LIVE_HOSTNAME });
+  // shouldCreateRecordedEntry is left at its default (true): Kaltura then applies
+  // the entry's own record_status — no recorded entry when Recording is off, a
+  // new one per session, or one that keeps growing for append. The scheduler's
+  // upload_recordings cron feeds the actual chunks via liveStream.appendRecording.
+  // Forcing '0' here used to suppress that entirely, which is why the KMC panel's
+  // Recording switch had no effect and a separate uploader had to imitate it.
   await kalturaApi({ service: 'liveStream', action: 'registerMediaServer', ks,
     entryId: entry.entryId, hostname: LIVE_HOSTNAME, mediaServerIndex: '0',
-    applicationName: 'kLive', liveEntryStatus: '1', shouldCreateRecordedEntry: '0' });
+    applicationName: 'kLive', liveEntryStatus: '1' });
   if (entry.native) await setLiveStreams(name, entry);
 }
 

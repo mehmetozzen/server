@@ -1035,6 +1035,25 @@ if [ -f "$LOCAL_INI" ] && ! grep -q "^kmc_analytics_version" "$LOCAL_INI" 2>/dev
     echo "[kaltura] Set kmc_analytics_version = ${ANALYTICS_VERSION:-v3.4.2} in local.ini"
 fi
 
+# ── Live recording: AMF sync-point parser binary ───────────────────────────────
+# local.template.ini ships bin_path_ffprobeKAMFMediaInfoParser pointing at a
+# binary of that literal name, which upstream Kaltura builds separately and this
+# image does not carry. KAMFMediaInfoParser then shells out to a command that
+# does not exist, gets empty output and throws — and because that throw happens
+# inside kCuePointManager's CONVERT_LIVE_SEGMENT consumer, it aborts the whole
+# job-finished chain before kFlowHelper can register the .ts segment and queue
+# the concat. Net effect: liveStream.appendRecording accepted every chunk and
+# the recorded entry silently never grew past its first session.
+# Plain ffprobe runs the exact same command line, so point it there.
+if [ -f "$LOCAL_INI" ]; then
+    if grep -q "^bin_path_ffprobeKAMFMediaInfoParser" "$LOCAL_INI" 2>/dev/null; then
+        sed -i "s|^bin_path_ffprobeKAMFMediaInfoParser.*|bin_path_ffprobeKAMFMediaInfoParser = /usr/bin/ffprobe|" "$LOCAL_INI"
+    else
+        echo "bin_path_ffprobeKAMFMediaInfoParser = /usr/bin/ffprobe" >> "$LOCAL_INI"
+    fi
+    echo "[kaltura] Set bin_path_ffprobeKAMFMediaInfoParser = /usr/bin/ffprobe in local.ini"
+fi
+
 # ── Studio v2 spinner fixes ────────────────────────────────────────────────────
 # Two-pronged fix for the loading spinner that never disappears after the
 # players list is shown:
