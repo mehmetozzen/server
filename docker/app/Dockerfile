@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     libfreetype6-dev \
     libxml2-dev \
+    libxslt1-dev \
     libzip-dev \
     libldap2-dev \
     libssl-dev \
@@ -103,6 +104,10 @@ RUN mkdir -p /opt/kaltura/apps/kmc-analytics && \
     ln -s /opt/kaltura/apps/kmc-analytics/${ANALYTICS_VERSION} /opt/kaltura/apps/kmc-analytics/latest && \
     rm -rf /tmp/analytics.zip /tmp/analytics_extract
 
+# xsl: content distribution builds every provider's field values by running
+# an XSLT over the entry MRSS (ConfigurableDistributionProfile), so without
+# it XSLTProcessor is undefined and submitting an entry dies with a fatal
+# error -- the distribution row sticks at SUBMITTING and no job is queued.
 RUN LDAP_LIBDIR=$(find /usr/lib -name "libldap.so" | head -1 | xargs dirname | sed 's|/usr/||') \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-configure ldap --with-libdir="$LDAP_LIBDIR" \
@@ -112,6 +117,7 @@ RUN LDAP_LIBDIR=$(find /usr/lib -name "libldap.so" | head -1 | xargs dirname | s
         mbstring \
         gd \
         xml \
+        xsl \
         zip \
         opcache \
         ldap \

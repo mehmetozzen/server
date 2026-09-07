@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     libfreetype6-dev \
     libxml2-dev \
+    libxslt1-dev \
     libzip-dev \
     libldap2-dev \
     libssl-dev \
@@ -64,10 +65,15 @@ COPY docker/batch/qt-faststart.sh /usr/bin/qt-faststart
 RUN chmod +x /usr/bin/ffmpeg /usr/bin/qt-faststart
 
 # PHP extensions (no configure needed)
+# xsl: content distribution builds every provider's field values by running
+# an XSLT over the entry MRSS (ConfigurableDistributionProfile), so without
+# it XSLTProcessor is undefined and submitting an entry dies with a fatal
+# error -- the distribution row sticks at SUBMITTING and no job is queued.
 RUN docker-php-ext-install \
     pdo_mysql \
     mbstring \
     xml \
+    xsl \
     zip \
     opcache \
     exif \
