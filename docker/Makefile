@@ -15,7 +15,11 @@ CONF         := $(MAKEFILE_DIR)/kaltura.conf
 # silently drop its whole analytics stack. Default it ON when the key is
 # missing; an explicit COMPOSE_PROFILES (set, or empty to disable) always wins.
 PROFILE_FLAG := $(if $(shell grep -qE '^COMPOSE_PROFILES=' $(CONF) 2>/dev/null && echo set),,--profile analytics)
-COMPOSE      := docker compose --env-file $(CONF) $(PROFILE_FLAG) -f $(MAKEFILE_DIR)/docker-compose.yml
+# Entry media mounted from the host (see docker-compose.media.yml). Added only
+# when KALTURA_MEDIA_DIR is set: without it media stays in the kaltura_web
+# volume, and mounting over that path would hide what the volume holds.
+MEDIA_FLAG   := $(if $(shell grep -qE '^KALTURA_MEDIA_DIR=.+' $(CONF) 2>/dev/null && echo set),-f $(MAKEFILE_DIR)/docker-compose.media.yml)
+COMPOSE      := docker compose --env-file $(CONF) $(PROFILE_FLAG) -f $(MAKEFILE_DIR)/docker-compose.yml $(MEDIA_FLAG)
 
 # Core = everything except the Druid analytics stack (for low-RAM hosts).
 # analytics-receiver is CORE, not Druid: live-rtmp's on_publish auth callback

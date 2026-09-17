@@ -1,0 +1,34 @@
+# Entry media from a directory on the host instead of the kaltura_web volume.
+#
+# For moving an existing (bare-metal) Kaltura onto this stack without copying
+# its media: KALTURA_MEDIA_DIR in kaltura.conf points at the old install's
+# content/entry directory. `make` adds this file only when that variable is set
+# (MEDIA_FLAG in the Makefile), so a normal install is untouched. Running
+# compose by hand? Pass it yourself, on EVERY call — a single `up` without it
+# recreates the containers on the empty volume directory and new uploads land
+# there instead:
+#   docker compose --env-file kaltura.conf -f docker-compose.yml -f docker-compose.media.yml up -d
+#
+# Only content/entry: that is where file_sync points for every entry's source,
+# flavors and thumbnails (/content/entry/data/...). The rest of the web dir is
+# product files the app entrypoint writes itself (html5lib, generated UI confs,
+# metadata and notification templates); mounting an old install's whole web
+# dir would mix the two versions.
+#
+# Ownership: the containers' www-data must carry the media's numeric owner —
+# set KALTURA_WWW_UID / KALTURA_WWW_GID (docker/common/host-ownership.sh).
+#
+# Long syntax so create_host_path can be false: a mistyped path must stop the
+# stack, not start it on a freshly created empty directory.
+services:
+  kaltura:
+    volumes: &host_media
+      - type: bind
+        source: ${KALTURA_MEDIA_DIR:?not set in docker/kaltura.conf}
+        target: /opt/kaltura/web/content/entry
+        bind:
+          create_host_path: false
+  batch:
+    volumes: *host_media
+  scheduler:
+    volumes: *host_media

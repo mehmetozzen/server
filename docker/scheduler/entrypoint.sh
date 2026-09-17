@@ -16,6 +16,17 @@ MARKER="$APP_DIR/.kaltura_installed"
 
 log() { echo "[scheduler] $*"; }
 
+# ── www-data ids (see docker/common/host-ownership.sh) ───────────────────────
+# Cron jobs run as www-data against the same files as batch; the ids must match.
+# This script is bind-mounted but the helper is baked into the batch image, so
+# a missing helper means a stale image — fatal only if ids were requested.
+if [ -f /opt/kaltura/host-ownership.sh ]; then
+    . /opt/kaltura/host-ownership.sh
+elif [ -n "${KALTURA_WWW_UID:-}${KALTURA_WWW_GID:-}" ]; then
+    log "FATAL: KALTURA_WWW_UID/KALTURA_WWW_GID set but the image predates them — run make -C docker build"
+    exit 1
+fi
+
 # ── Wait until the app container has finished first-time initialization ───────
 # The cron jobs bootstrap the Kaltura PHP stack and need the generated
 # configurations/*.ini files plus a seeded database.

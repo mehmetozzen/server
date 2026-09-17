@@ -234,6 +234,11 @@ else is bound to `127.0.0.1` on the host or not published at all.
 | `druid_pgdata` | druid-postgres | Druid metadata |
 | `druid_*_var` | each druid role | Per-service working dirs |
 
+With `KALTURA_MEDIA_DIR` set in `kaltura.conf`, `content/entry` inside
+`kaltura_web` is replaced by that host directory (`docker-compose.media.yml`,
+added automatically by `make`). It is not in `make backup`, and `make destroy`
+does not delete it.
+
 The repository root is bind-mounted into `kaltura` and `batch` at
 `/opt/kaltura/app`, so source edits are picked up on container restart.
 **`entrypoint.sh` is baked into the image** (`COPY` at build time), so changes to

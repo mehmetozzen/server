@@ -14,6 +14,11 @@
 # ── Domain ────────────────────────────────────────────────────
 WWW_HOST=kaltura.example.com
 PROTOCOL=http
+# Host written into media URLs (local.ini cdn_host: thumbnails, downloads,
+# player assets). Default WWW_HOST. Set it when a CDN or cache tier in front
+# of this server answers on its own name, e.g. cdn.example.com. Applied on
+# the next restart of the kaltura container.
+# CDN_HOST=
 
 # ── SSL (required when PROTOCOL=https) ────────────────────────
 # Paths inside the container. Put your cert files in docker/certs/
@@ -117,3 +122,21 @@ COMPOSE_PROFILES=analytics
 # (Admin Console partner-usage) failing soft/empty instead of erroring.
 # Set to false to skip and save several minutes of first-boot time.
 # LOAD_DWH=true
+
+# ── Media on the host (moving an existing install) ────────────
+# Serve entry media (sources, flavors, thumbnails) from a directory on this
+# host instead of the kaltura_web volume, e.g. an old bare-metal install's
+# content/entry, so terabytes do not have to be copied. `make` then mounts it
+# at /opt/kaltura/web/content/entry (docker-compose.media.yml). Leave unset
+# for a normal install: on a stack whose media is already in the volume,
+# setting it hides that media.
+# Not part of `make backup` — back this directory up on its own.
+# KALTURA_MEDIA_DIR=/opt/kaltura/web/content/entry
+#
+# Numeric owner of that media. The containers' www-data takes these ids, so it
+# can read and write what the old install wrote without any file being
+# re-owned (the old system stays usable). Read them off the directory:
+#   stat -c '%u:%g %a %n' /opt/kaltura/web/content/entry /opt/kaltura/web/content/entry/data
+# Unset = the image's 33:33.
+# KALTURA_WWW_UID=
+# KALTURA_WWW_GID=

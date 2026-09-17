@@ -18,6 +18,7 @@ TIME_ZONE="${TIME_ZONE:-UTC}"
 SERVICE_PROTOCOL="${PROTOCOL:-http}"
 SERVICE_PORT=$( [ "$SERVICE_PROTOCOL" = "https" ] && echo 443 || echo 80 )
 WWW_HOST="${WWW_HOST:-kaltura.example.com}"
+CDN_HOST="${CDN_HOST:-$WWW_HOST}"
 SERVICE_URL="${SERVICE_URL:-${SERVICE_PROTOCOL}://${WWW_HOST}}"
 ADMIN_EMAIL="${ADMIN_CONSOLE_ADMIN_MAIL:-admin@kaltura.local}"
 ADMIN_PASS="${ADMIN_CONSOLE_PASSWORD:?ADMIN_CONSOLE_PASSWORD must be set in docker/kaltura.conf (run: make -C docker config)}"
@@ -65,6 +66,11 @@ probe() {
         warn "$(printf '%-26s' "$label") UNREACHABLE"
     fi
 }
+
+# ── www-data ids + mount-aware chown (see docker/common/host-ownership.sh) ────
+# Before msmtp: it chowns /etc/msmtprc to group www-data, which must already
+# carry its final number.
+. /opt/kaltura/host-ownership.sh
 
 # ── Outgoing mail: /etc/msmtprc from SMTP_* env (see docker/common/setup-msmtp.sh)
 [ -f /opt/kaltura/setup-msmtp.sh ] && . /opt/kaltura/setup-msmtp.sh
@@ -176,7 +182,9 @@ mkdir -p \
     "$TMP_DIR" \
     "$APP_DIR/cache"
 
-chown -R www-data:www-data "$WEB_DIR" "$LOG_DIR" "$TMP_DIR" "$APP_DIR/cache" 2>/dev/null || true
+# chown_www, not chown -R: media mounted from the host (KALTURA_MEDIA_DIR)
+# sits inside $WEB_DIR and must keep the owner the host gave it.
+chown_www "$WEB_DIR" "$LOG_DIR" "$TMP_DIR" "$APP_DIR/cache" 2>/dev/null || true
 
 # ── Link /opt/kaltura/apps (KMC NG, studio, etc.) into BASE_DIR ───────────────
 [ ! -e "$APP_DIR/apps" ] && ln -sf /opt/kaltura/apps "$APP_DIR/apps"
@@ -260,7 +268,7 @@ generate_ini_from_template() {
         -e "s|@PROTOCOL@|$SERVICE_PROTOCOL|g" \
         -e "s|@SERVICE_URL@|$SERVICE_URL|g" \
         -e "s|@WWW_HOST@|$WWW_HOST|g" \
-        -e "s|@CDN_HOST@|$WWW_HOST|g" \
+        -e "s|@CDN_HOST@|$CDN_HOST|g" \
         -e "s|@IIS_HOST@|$WWW_HOST|g" \
         -e "s|@KALTURA_FULL_VIRTUAL_HOST_NAME@|$WWW_HOST|g" \
         -e "s|@KALTURA_VIRTUAL_HOST_NAME@|$WWW_HOST|g" \
@@ -784,7 +792,7 @@ php installPlugins.php >> "$LOG_DIR/installPlugins.log" 2>&1
 #     and rebuilds the autoloader map from scratch on every single invocation.
 #   cache/*.cache, cache/deploy, cache/generator, $LOG_DIR/*.log
 # classMap.cache also needs an explicit chmod: chown alone leaves it 0600.
-chown -R www-data:www-data "$WEB_DIR/content" "$WEB_DIR/cache" "$WEB_DIR/tmp" \
+chown_www "$WEB_DIR/content" "$WEB_DIR/cache" "$WEB_DIR/tmp" \
     "$LOG_DIR" "$APP_DIR/cache" 2>/dev/null || true
 chmod 644 "$APP_DIR/cache/scripts/classMap.cache" 2>/dev/null || true
 

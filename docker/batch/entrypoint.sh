@@ -16,6 +16,10 @@ SERVICE_PROTOCOL="${PROTOCOL:-http}"
 WWW_HOST="${WWW_HOST:-kaltura.example.com}"
 SERVICE_URL="${SERVICE_URL:-${SERVICE_PROTOCOL}://${WWW_HOST}}"
 
+# ── www-data ids (see docker/common/host-ownership.sh) ───────────────────────
+# Before msmtp and every chown below, so they all use the final numbers.
+. /opt/kaltura/host-ownership.sh
+
 # ── Outgoing mail: /etc/msmtprc from SMTP_* env (see docker/common/setup-msmtp.sh)
 # The Mailer batch worker (KAsyncMailer → PHPMailer → mail() → sendmail_path)
 # runs in THIS container, so the relay config is required here above all.

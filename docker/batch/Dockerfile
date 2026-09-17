@@ -103,6 +103,7 @@ RUN mkdir -p /opt/kaltura/bin && ln -sf /usr/bin/mediainfo /opt/kaltura/bin/medi
 
 COPY docker/app/php.ini /usr/local/etc/php/conf.d/kaltura.ini
 COPY docker/common/setup-msmtp.sh /opt/kaltura/setup-msmtp.sh
+COPY docker/common/host-ownership.sh /opt/kaltura/host-ownership.sh
 COPY docker/batch/batch.ini.template /opt/kaltura/docker/batch/batch.ini.template
 COPY docker/batch/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

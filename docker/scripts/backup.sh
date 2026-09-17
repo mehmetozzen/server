@@ -63,6 +63,11 @@ else
         || die "could not archive the ${PROJECT}_kaltura_web volume"
     say "web content" "$(du -h "$DEST/web-content.tgz" | cut -f1)"
 fi
+# Media mounted from the host (KALTURA_MEDIA_DIR) is not in the volume, so the
+# archive above does not contain it. Said out loud: a backup that silently
+# leaves out every video is worse than none.
+_media_dir=$(sed -n 's/^KALTURA_MEDIA_DIR=//p' "$CONF" | tail -1)
+[ -n "$_media_dir" ] && say "host media" "NOT included — back up $_media_dir separately"
 
 # ── 2. Databases ──────────────────────────────────────────────────────────────
 # Enumerated rather than --all-databases: the mysql system schema is version
