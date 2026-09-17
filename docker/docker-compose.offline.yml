@@ -1,0 +1,45 @@
+# Install on a host with no internet: every image comes from `make import-images`.
+#
+# docker-compose.yml pins registry images by DIGEST. A digest belongs to the
+# registry, not to the image: `docker save` + `docker load` keep the image ID but
+# drop the digest (and the tag of an image pulled by digest), so on the offline
+# host `mysql:5.7@sha256:…` no longer resolves and compose tries to pull it.
+# Here the same images are referenced by the tag `make export-images` gave them,
+# and pull_policy: never turns any missing image into an immediate error instead
+# of a registry timeout. The digest guarantee is not lost: import-images checks
+# every loaded image ID against the list export-images wrote.
+#
+# Added by `make` when KALTURA_OFFLINE=1 is set in kaltura.conf (OFFLINE_FLAG).
+# Keep the tags equal to docker-compose.yml minus "@sha256:…" — export-images
+# refuses to run when they differ.
+services:
+  mysql:
+    image: mysql:5.7
+    pull_policy: never
+  memcache:
+    image: memcached:1.6-alpine
+    pull_policy: never
+  druid-postgres:
+    image: postgres:15-alpine
+    pull_policy: never
+  druid-zookeeper:
+    image: zookeeper:3.8
+    pull_policy: never
+  druid-coordinator:
+    image: apache/druid:30.0.1
+    pull_policy: never
+  druid-broker:
+    image: apache/druid:30.0.1
+    pull_policy: never
+  druid-historical:
+    image: apache/druid:30.0.1
+    pull_policy: never
+  druid-middlemanager:
+    image: apache/druid:30.0.1
+    pull_policy: never
+  druid-router:
+    image: apache/druid:30.0.1
+    pull_policy: never
+  kafka:
+    image: apache/kafka:3.8.0
+    pull_policy: never

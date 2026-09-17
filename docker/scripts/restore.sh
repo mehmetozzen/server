@@ -83,6 +83,9 @@ COMPOSE=(docker compose --env-file "$CONF" -f "$DOCKER_DIR/docker-compose.yml")
 # Same rule as MEDIA_FLAG in the Makefile: the stack is brought back up below,
 # and without the overlay it would start on the empty volume directory.
 [ -n "${KALTURA_MEDIA_DIR:-}" ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.media.yml")
+# And OFFLINE_FLAG: on a host with no internet the digest-pinned images only
+# resolve through the offline overlay.
+[ "${KALTURA_OFFLINE:-}" = 1 ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.offline.yml")
 
 echo "2. Stopping the stack"
 "${COMPOSE[@]}" down >/dev/null 2>&1 || true

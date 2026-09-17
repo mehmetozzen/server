@@ -185,6 +185,27 @@ Either comment out `COMPOSE_PROFILES` in `kaltura.conf`, or force it per-run:
 make -C docker core-up
 ```
 
+### Host without internet
+
+Nothing can be built or pulled there, so the images travel as a file next to
+the code package (the stack bind-mounts the code; it is not inside the images).
+
+On an **x86_64 Linux host with internet**, from the code package that will be delivered:
+```bash
+make -C docker config            # only needed to render the compose file
+make -C docker export-images     # → ~/kaltura-images/ (tar, .sha256, images.lst, BUILD_INFO)
+```
+
+On the **offline host**:
+```bash
+make -C docker config            # then edit kaltura.conf and set KALTURA_OFFLINE=1
+make -C docker import-images IMAGES=/path/to/kaltura-images/kaltura-images.tar
+make -C docker up
+```
+`import-images` stops on a bad checksum, on any image whose ID differs from the
+exported one, and on any stack image that would not resolve without a registry.
+Copy the whole export directory, not just the tar.
+
 ---
 
 ## 5. Reset (wipe everything and reinstall)

@@ -19,7 +19,11 @@ PROFILE_FLAG := $(if $(shell grep -qE '^COMPOSE_PROFILES=' $(CONF) 2>/dev/null &
 # when KALTURA_MEDIA_DIR is set: without it media stays in the kaltura_web
 # volume, and mounting over that path would hide what the volume holds.
 MEDIA_FLAG   := $(if $(shell grep -qE '^KALTURA_MEDIA_DIR=.+' $(CONF) 2>/dev/null && echo set),-f $(MAKEFILE_DIR)/docker-compose.media.yml)
-COMPOSE      := docker compose --env-file $(CONF) $(PROFILE_FLAG) -f $(MAKEFILE_DIR)/docker-compose.yml $(MEDIA_FLAG)
+# Host with no internet (see docker-compose.offline.yml): images come from
+# `make import-images`, so nothing may be pulled or built.
+OFFLINE      := $(shell grep -qE '^KALTURA_OFFLINE=1' $(CONF) 2>/dev/null && echo 1)
+OFFLINE_FLAG := $(if $(OFFLINE),-f $(MAKEFILE_DIR)/docker-compose.offline.yml)
+COMPOSE      := docker compose --env-file $(CONF) $(PROFILE_FLAG) -f $(MAKEFILE_DIR)/docker-compose.yml $(MEDIA_FLAG) $(OFFLINE_FLAG)
 
 # Core = everything except the Druid analytics stack (for low-RAM hosts).
 # analytics-receiver is CORE, not Druid: live-rtmp's on_publish auth callback
@@ -32,7 +36,8 @@ DRUID_SERVICES := druid-postgres druid-zookeeper druid-coordinator druid-broker 
 
 .DEFAULT_GOAL := help
 .PHONY: help config build up core-up realtime-up start stop restart down destroy reset \
-        druid-up druid-down logs ps shell mysql verify doctor reindex backup restore
+        druid-up druid-down logs ps shell mysql verify doctor reindex backup restore \
+        export-images import-images
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -53,7 +58,16 @@ check-config:
 	@test -f $(CONF) || { echo "Missing $(CONF). Run 'make config' and edit it first."; exit 1; }
 
 build: check-config ## Build all locally-built images (cached layers make this fast)
+	@test -z "$(OFFLINE)" || { echo "KALTURA_OFFLINE=1: images come from 'make import-images', there is nothing to build from"; exit 1; }
 	$(COMPOSE) build
+
+# ── Hosts without internet ─────────────────────────────────────────────────────
+export-images: check-config ## Build + pack all images (analytics included) into one tar — x86_64 host WITH internet; OUT=dir
+	@KALTURA_CONF=$(CONF) OUT="$(OUT)" $(MAKEFILE_DIR)/scripts/export-images.sh
+
+import-images: check-config ## Verify and load that tar on the offline host:  make import-images IMAGES=.../kaltura-images.tar
+	@test -n "$(IMAGES)" || { echo "Usage: make -C docker import-images IMAGES=<path to kaltura-images.tar>"; exit 1; }
+	@KALTURA_CONF=$(CONF) $(MAKEFILE_DIR)/scripts/import-images.sh "$(IMAGES)"
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
 up: check-config ## Start the stack (analytics included unless COMPOSE_PROFILES is commented out in kaltura.conf)
@@ -88,7 +102,7 @@ reset: check-config ## Clean reinstall: wipe volumes + generated config, rebuild
 		[ -e "$$f" ] || continue; \
 		rm -f "$${f%.template.ini}.ini" "$${f%.ini.template}.ini"; \
 	done
-	$(COMPOSE) build
+	$(if $(OFFLINE),,$(COMPOSE) build)
 	$(COMPOSE) up -d
 	@echo "Stack starting. Follow init with:  make -C docker logs S=kaltura"
 

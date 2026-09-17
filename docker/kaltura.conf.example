@@ -140,3 +140,10 @@ COMPOSE_PROFILES=analytics
 # Unset = the image's 33:33.
 # KALTURA_WWW_UID=
 # KALTURA_WWW_GID=
+
+# ── Host without internet ─────────────────────────────────────
+# Images are built elsewhere (`make export-images` on an x86_64 host with
+# internet) and loaded here with `make import-images IMAGES=…/kaltura-images.tar`.
+# With 1, `make` uses docker-compose.offline.yml: nothing is pulled or built,
+# a missing image fails at once instead of waiting on a registry.
+# KALTURA_OFFLINE=1
