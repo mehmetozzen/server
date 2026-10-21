@@ -112,6 +112,8 @@ services:
       - kaltura_log:/opt/kaltura/log
       - kaltura_tmp:/opt/kaltura/tmp
       - ./certs:/opt/kaltura/certs:ro
+      # /hlsm/ route for Kaltura's default VOD HLS profile (see the file).
+      - ./app/apache-hlsm.conf:/etc/apache2/conf-enabled/zz-kaltura-hlsm.conf:ro
     env_file: ./kaltura.conf
     environment:
       DB1_HOST: mysql
