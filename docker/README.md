@@ -260,6 +260,12 @@ With `KALTURA_MEDIA_DIR` set in `kaltura.conf`, `content/entry` inside
 added automatically by `make`). It is not in `make backup`, and `make destroy`
 does not delete it.
 
+With `KALTURA_STORAGE_DIR` set, that host directory is mounted at the same path
+into `kaltura`, `batch` and `scheduler` (`docker-compose.storage.yml`). It is for
+remote storage profiles with protocol Local, whose `storage_base_dir` is an
+absolute path on the host: without the mount, exports to it fail and every new
+upload to that publisher ends in error. Also not in `make backup`.
+
 The repository root is bind-mounted into `kaltura` and `batch` at
 `/opt/kaltura/app`, so source edits are picked up on container restart.
 **`entrypoint.sh` is baked into the image** (`COPY` at build time), so changes to

@@ -19,11 +19,16 @@ PROFILE_FLAG := $(if $(shell grep -qE '^COMPOSE_PROFILES=' $(CONF) 2>/dev/null &
 # when KALTURA_MEDIA_DIR is set: without it media stays in the kaltura_web
 # volume, and mounting over that path would hide what the volume holds.
 MEDIA_FLAG   := $(if $(shell grep -qE '^KALTURA_MEDIA_DIR=.+' $(CONF) 2>/dev/null && echo set),-f $(MAKEFILE_DIR)/docker-compose.media.yml)
+# Target directory of a Local remote-storage profile (see
+# docker-compose.storage.yml), mounted at the same path. Added only when
+# KALTURA_STORAGE_DIR is set.
+STORAGE_DIR  := $(shell sed -n 's/^KALTURA_STORAGE_DIR=//p' $(CONF) 2>/dev/null | tail -1)
+STORAGE_FLAG := $(if $(STORAGE_DIR),-f $(MAKEFILE_DIR)/docker-compose.storage.yml)
 # Host with no internet (see docker-compose.offline.yml): images come from
 # `make import-images`, so nothing may be pulled or built.
 OFFLINE      := $(shell grep -qE '^KALTURA_OFFLINE=1' $(CONF) 2>/dev/null && echo 1)
 OFFLINE_FLAG := $(if $(OFFLINE),-f $(MAKEFILE_DIR)/docker-compose.offline.yml)
-COMPOSE      := docker compose --env-file $(CONF) $(PROFILE_FLAG) -f $(MAKEFILE_DIR)/docker-compose.yml $(MEDIA_FLAG) $(OFFLINE_FLAG)
+COMPOSE      := docker compose --env-file $(CONF) $(PROFILE_FLAG) -f $(MAKEFILE_DIR)/docker-compose.yml $(MEDIA_FLAG) $(STORAGE_FLAG) $(OFFLINE_FLAG)
 
 # Core = everything except the Druid analytics stack (for low-RAM hosts).
 # analytics-receiver is CORE, not Druid: live-rtmp's on_publish auth callback
@@ -56,6 +61,15 @@ config: ## Create docker/kaltura.conf from the example (generates strong random 
 
 check-config:
 	@test -f $(CONF) || { echo "Missing $(CONF). Run 'make config' and edit it first."; exit 1; }
+	@# Mounted at the same path inside the containers: a value under the
+	@# product tree (/opt/kaltura, or / itself) would hide the app's own files.
+	@case "$(STORAGE_DIR)" in \
+	  ""|/*) ;; \
+	  *) echo "KALTURA_STORAGE_DIR must be an absolute path, got '$(STORAGE_DIR)'"; exit 1 ;; \
+	esac; \
+	case "$(STORAGE_DIR)" in \
+	  /|/opt|/opt/|/opt/kaltura|/opt/kaltura/*) echo "KALTURA_STORAGE_DIR=$(STORAGE_DIR) would cover the product tree — use the storage's own directory (e.g. /kvd)"; exit 1 ;; \
+	esac
 
 build: check-config ## Build all locally-built images (cached layers make this fast)
 	@test -z "$(OFFLINE)" || { echo "KALTURA_OFFLINE=1: images come from 'make import-images', there is nothing to build from"; exit 1; }

@@ -83,6 +83,8 @@ COMPOSE=(docker compose --env-file "$CONF" -f "$DOCKER_DIR/docker-compose.yml")
 # Same rule as MEDIA_FLAG in the Makefile: the stack is brought back up below,
 # and without the overlay it would start on the empty volume directory.
 [ -n "${KALTURA_MEDIA_DIR:-}" ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.media.yml")
+# STORAGE_FLAG likewise: without it new uploads to a Local-storage publisher fail.
+[ -n "${KALTURA_STORAGE_DIR:-}" ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.storage.yml")
 # And OFFLINE_FLAG: on a host with no internet the digest-pinned images only
 # resolve through the offline overlay.
 [ "${KALTURA_OFFLINE:-}" = 1 ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.offline.yml")

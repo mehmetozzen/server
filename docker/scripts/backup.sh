@@ -68,6 +68,8 @@ fi
 # leaves out every video is worse than none.
 _media_dir=$(sed -n 's/^KALTURA_MEDIA_DIR=//p' "$CONF" | tail -1)
 [ -n "$_media_dir" ] && say "host media" "NOT included — back up $_media_dir separately"
+_storage_dir=$(sed -n 's/^KALTURA_STORAGE_DIR=//p' "$CONF" | tail -1)
+[ -n "$_storage_dir" ] && say "host storage" "NOT included — back up $_storage_dir separately"
 
 # ── 2. Databases ──────────────────────────────────────────────────────────────
 # Enumerated rather than --all-databases: the mysql system schema is version

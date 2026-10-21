@@ -1,0 +1,40 @@
+# Target directory of a Local remote-storage profile, mounted from the host.
+#
+# A Kaltura remote storage profile with protocol "Local" (storage_profile.protocol
+# = 7) exports every READY flavor by copying it to storage_base_dir, an absolute
+# path on the batch host, and — with "delete from Kaltura" on — removes the
+# local copy afterwards. On bare metal that path is simply a directory on the
+# same machine. In containers it does not exist unless it is mounted, and then:
+#   - every new upload to such a publisher ends in ERROR_CONVERTING (the export
+#     job fails: "Can't put file … Failed to open stream"),
+#   - flavors that only exist on the storage cannot be downloaded or re-used.
+#
+# KALTURA_STORAGE_DIR in kaltura.conf names the host directory that holds those
+# storage_base_dir paths (e.g. /kvd when they are /kvd/kaltura/web/content/…).
+# It is mounted at the SAME path: file_sync and storage_profile store absolute
+# paths, so the containers must see them exactly where the old install did.
+# `make` adds this file only when that variable is set (STORAGE_FLAG in the
+# Makefile). Running compose by hand? Pass it on every call, as with
+# docker-compose.media.yml.
+#
+# Ownership is shared with the entry media: KALTURA_WWW_UID / KALTURA_WWW_GID
+# (docker/common/host-ownership.sh). Nothing here is ever chowned — the mount
+# is outside every directory the entrypoints re-own.
+#
+# Serving these files to a CDN (the storage's delivery profile URL) is not done
+# by Kaltura; that origin is a separate web server and is not part of this file.
+#
+# Long syntax so create_host_path can be false: a mistyped path must stop the
+# stack, not start it on a freshly created empty directory.
+services:
+  kaltura:
+    volumes: &host_storage
+      - type: bind
+        source: ${KALTURA_STORAGE_DIR:?not set in docker/kaltura.conf}
+        target: ${KALTURA_STORAGE_DIR}
+        bind:
+          create_host_path: false
+  batch:
+    volumes: *host_storage
+  scheduler:
+    volumes: *host_storage

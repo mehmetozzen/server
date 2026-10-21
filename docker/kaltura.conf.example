@@ -140,6 +140,18 @@ COMPOSE_PROFILES=analytics
 # Unset = the image's 33:33.
 # KALTURA_WWW_UID=
 # KALTURA_WWW_GID=
+#
+# Target directory of a "Local" remote storage profile. Some installs export
+# every flavor to a second directory (Admin Console → publisher → Remote
+# Storage, protocol Local), and a CDN serves it from there. Find it with:
+#   SELECT id, partner_id, protocol, storage_base_dir FROM kaltura.storage_profile;
+# protocol 7 = Local. Set this to the host directory holding those
+# storage_base_dir paths — it is mounted at the SAME path, because the database
+# stores absolute paths (docker-compose.storage.yml). Without it, new uploads
+# to such a publisher end in error and its exported flavors are unreachable.
+# Must not be /opt/kaltura or anything under it. Same owner rules as above.
+# Not part of `make backup` — back it up on its own.
+# KALTURA_STORAGE_DIR=/kvd
 
 # ── Host without internet ─────────────────────────────────────
 # Images are built elsewhere (`make export-images` on an x86_64 host with
