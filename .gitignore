@@ -115,3 +115,7 @@ docker/kaltura.conf
 
 # Backup safety copies of kaltura.conf made by scripts/restore.sh
 docker/kaltura.conf.before-restore-*
+
+# Generated from kaltura.conf by docker/scripts/data-dir.sh on every make run
+docker/docker-compose.volumes.yml
+docker/docker-compose.volumes.yml.tmp

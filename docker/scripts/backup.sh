@@ -51,12 +51,15 @@ say() { printf '  %-34s %s\n' "$1" "${2:-}"; }
 docker inspect -f '{{.State.Running}}' kaltura_mysql 2>/dev/null | grep -q true \
     || die "kaltura_mysql is not running — start the stack before backing up"
 
-# What `docker run -v` mounts for a volume. With KALTURA_DATA_DIR its host
+# What `docker run -v` mounts for a volume. With a KALTURA_*_DIR its host
 # directory: for a volume that does not exist yet (Druid not running),
 # `docker run -v <name>:…` would create it in Docker's own storage, and the next
 # `make up` would refuse it (scripts/data-dir.sh).
-_data_dir=$(sed -n 's/^KALTURA_DATA_DIR=//p' "$CONF" | tail -1)
-vol() { if [ -n "$_data_dir" ]; then echo "$_data_dir/$1"; else echo "${PROJECT}_$1"; fi; }
+vol() {
+    local d
+    d=$(KALTURA_CONF="$CONF" "$HERE/data-dir.sh" path "$1")
+    if [ -n "$d" ]; then echo "$d"; else echo "${PROJECT}_$1"; fi
+}
 
 mkdir -p "$DEST" || die "cannot create $DEST"
 echo "Backing up to $DEST"

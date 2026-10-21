@@ -24,12 +24,14 @@ MEDIA_FLAG   := $(if $(shell grep -qE '^KALTURA_MEDIA_DIR=.+' $(CONF) 2>/dev/nul
 # KALTURA_STORAGE_DIR is set.
 STORAGE_DIR  := $(shell sed -n 's/^KALTURA_STORAGE_DIR=//p' $(CONF) 2>/dev/null | tail -1)
 STORAGE_FLAG := $(if $(STORAGE_DIR),-f $(MAKEFILE_DIR)/docker-compose.storage.yml)
-# Named volumes kept in a host directory (see docker-compose.data.yml). Added
-# only when KALTURA_DATA_DIR is set: without it they stay in Docker's own
-# storage. scripts/data-dir.sh creates the subdirectories and refuses volumes
-# that already exist elsewhere (DATA_SH prepare, before every `up`).
-DATA_FLAG    := $(if $(shell grep -qE '^KALTURA_DATA_DIR=.+' $(CONF) 2>/dev/null && echo set),-f $(MAKEFILE_DIR)/docker-compose.data.yml)
+# Named volumes kept in host directories: KALTURA_DB_DIR, KALTURA_WEB_DIR, …,
+# KALTURA_DATA_DIR in kaltura.conf. scripts/data-dir.sh renders
+# docker-compose.volumes.yml from them on every run and prints its -f flag;
+# nothing when none is set, so the volumes stay in Docker's own storage. Before
+# every `up` it also checks the directories and refuses volumes that already
+# exist elsewhere (DATA_SH prepare).
 DATA_SH      := KALTURA_CONF=$(CONF) $(MAKEFILE_DIR)/scripts/data-dir.sh
+DATA_FLAG    := $(shell $(DATA_SH) render)
 # Host with no internet (see docker-compose.offline.yml): images come from
 # `make import-images`, so nothing may be pulled or built.
 OFFLINE      := $(shell grep -qE '^KALTURA_OFFLINE=1' $(CONF) 2>/dev/null && echo 1)

@@ -266,23 +266,37 @@ remote storage profiles with protocol Local, whose `storage_base_dir` is an
 absolute path on the host: without the mount, exports to it fail and every new
 upload to that publisher ends in error. Also not in `make backup`.
 
-With `KALTURA_DATA_DIR` set, every volume above keeps its data in that host
-directory instead of Docker's own storage — one subdirectory per volume, named
-after it (`docker-compose.data.yml`, added automatically by `make`, which also
-creates the subdirectories). The volume names do not change, so `make backup`
-and `make restore` work as before; `make destroy` empties the subdirectories and
-nothing else in the directory. Set it before the first `make up`: compose never
-moves data, so `make up` refuses to start while a volume exists somewhere else.
-Moving an existing install (stack down, data copied with owners kept):
+Any volume can keep its data in a host directory instead of Docker's own
+storage — set only the ones you want outside, in `kaltura.conf`:
+
+| Setting | Volume(s) |
+|---|---|
+| `KALTURA_DB_DIR` | `mysql_data` |
+| `KALTURA_WEB_DIR` | `kaltura_web` |
+| `KALTURA_LOG_DIR` | `kaltura_log` |
+| `KALTURA_TMP_DIR` | `kaltura_tmp` |
+| `KALTURA_SEARCH_DIR` | `sphinx_data` |
+| `KALTURA_LIVE_DIR` | `live_recordings` |
+| `KALTURA_ANALYTICS_DIR` | `kafka_data` and every `druid_*`, one subdirectory each |
+| `KALTURA_DATA_DIR` | every volume not set above, as `<dir>/<volume name>` |
+
+A single-volume setting is the directory itself; it must exist and must not be
+the root of a filesystem (MySQL will not initialise next to `lost+found`). `make`
+renders `docker-compose.volumes.yml` from these settings on every run (generated,
+git-ignored — read it to see what is bound where) and creates the subdirectories
+of the two group settings. The volume names do not change, so `make backup` and
+`make restore` work as before; `make destroy` empties the directories and
+nothing else in them. Set them before the first `make up`: compose never moves
+data, so `make up` refuses to start while a volume exists somewhere other than
+its setting says. Moving an existing volume (stack down, data copied with owners
+kept; repeat per volume):
 
 ```bash
 make -C docker down
-sudo mkdir -p /data/kaltura          # the KALTURA_DATA_DIR you will set
-for v in $(sed -n 's/^  \([a-z_]*\):$/\1/p' docker/docker-compose.data.yml); do
-  src=$(docker volume inspect -f '{{.Mountpoint}}' docker_$v 2>/dev/null) || continue
-  sudo mkdir -p /data/kaltura/$v && sudo cp -a "$src/." /data/kaltura/$v/ && docker volume rm docker_$v
-done
-# add KALTURA_DATA_DIR=/data/kaltura to docker/kaltura.conf, then:
+v=mysql_data; dst=/data/kaltura/db       # the volume and the directory you will set
+sudo mkdir -p "$dst"
+sudo cp -a "$(docker volume inspect -f '{{.Mountpoint}}' docker_$v)/." "$dst/" && docker volume rm docker_$v
+# add KALTURA_DB_DIR=/data/kaltura/db to docker/kaltura.conf, then:
 make -C docker up
 ```
 

@@ -86,8 +86,9 @@ COMPOSE=(docker compose --env-file "$CONF" -f "$DOCKER_DIR/docker-compose.yml")
 # STORAGE_FLAG likewise: without it new uploads to a Local-storage publisher fail.
 [ -n "${KALTURA_STORAGE_DIR:-}" ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.storage.yml")
 # DATA_FLAG likewise: without it the volumes would be recreated in Docker's own
-# storage and the restore would land there instead of in KALTURA_DATA_DIR.
-[ -n "${KALTURA_DATA_DIR:-}" ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.data.yml")
+# storage and the restore would land there instead of their KALTURA_*_DIR.
+read -ra _data_flag <<< "$(KALTURA_CONF="$CONF" "$HERE/data-dir.sh" render)"
+[ ${#_data_flag[@]} -gt 0 ] && COMPOSE+=("${_data_flag[@]}")
 # And OFFLINE_FLAG: on a host with no internet the digest-pinned images only
 # resolve through the offline overlay.
 [ "${KALTURA_OFFLINE:-}" = 1 ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.offline.yml")
@@ -97,12 +98,14 @@ echo "2. Stopping the stack"
 say "containers" "stopped"
 KALTURA_CONF="$CONF" "$HERE/data-dir.sh" prepare || die "volume directories not ready (see above)"
 
-# What `docker run -v` mounts for a volume. With KALTURA_DATA_DIR its host
+# What `docker run -v` mounts for a volume. With a KALTURA_*_DIR its host
 # directory: `docker volume rm` leaves that directory's contents in place, and
 # `docker run -v <name>:…` would recreate the volume in Docker's own storage,
 # without the bind.
 vol() {
-    if [ -n "${KALTURA_DATA_DIR:-}" ]; then echo "$KALTURA_DATA_DIR/$1"; else echo "${PROJECT}_$1"; fi
+    local d
+    d=$(KALTURA_CONF="$CONF" "$HERE/data-dir.sh" path "$1")
+    if [ -n "$d" ]; then echo "$d"; else echo "${PROJECT}_$1"; fi
 }
 
 echo "3. Restoring the content volume"
@@ -118,10 +121,7 @@ fi
 
 echo "4. Starting MySQL on an empty data volume"
 docker volume rm "${PROJECT}_mysql_data" >/dev/null 2>&1 || true
-if [ -n "${KALTURA_DATA_DIR:-}" ]; then
-    docker run --rm -v "$KALTURA_DATA_DIR:/d" -w /d alpine sh -c 'rm -rf mysql_data && mkdir mysql_data' \
-        || die "could not empty $KALTURA_DATA_DIR/mysql_data"
-fi
+KALTURA_CONF="$CONF" "$HERE/data-dir.sh" wipe mysql_data || die "could not empty the mysql_data directory"
 "${COMPOSE[@]}" up -d mysql >/dev/null 2>&1 || die "could not start MySQL"
 # Wait for the compose healthcheck, not a bare ping: on a fresh data volume the
 # mysql image runs a TEMPORARY server to initialise, answers ping from it, then

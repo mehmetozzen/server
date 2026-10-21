@@ -153,16 +153,32 @@ COMPOSE_PROFILES=analytics
 # Not part of `make backup` — back it up on its own.
 # KALTURA_STORAGE_DIR=/kvd
 
-# ── Volumes in a host directory ───────────────────────────────
-# Keep the stack's named volumes — database (mysql_data), content
-# (kaltura_web), search index, logs, analytics — in this host directory instead
-# of Docker's own storage (/var/lib/docker/volumes), e.g. on a separate disk.
-# One subdirectory per volume, named after it, created by `make up`
-# (docker-compose.data.yml); the directory itself must already exist.
-# Set it BEFORE the first `make up`: existing volumes are not moved, and
-# `make up` refuses to start while one is elsewhere (README, section 7).
-# Unset = Docker's own storage. `make destroy` empties the subdirectories.
-# KALTURA_DATA_DIR=/data/kaltura
+# ── Data in host directories ──────────────────────────────────
+# Each setting puts its data in that host directory instead of Docker's own
+# storage (/var/lib/docker/volumes), e.g. the database on its own disk. Set
+# only the ones you want outside; an unset or empty one stays where it was.
+#   KALTURA_DB_DIR         database (MySQL)
+#   KALTURA_WEB_DIR        web content: videos, flavors, thumbnails, player configs
+#   KALTURA_LOG_DIR        application and Apache logs
+#   KALTURA_TMP_DIR        temporary files, conversion workspace
+#   KALTURA_SEARCH_DIR     search index (Sphinx)
+#   KALTURA_LIVE_DIR       live stream recordings
+#   KALTURA_ANALYTICS_DIR  analytics (Druid + Kafka): one subdirectory per volume
+#   KALTURA_DATA_DIR       everything not set above: <dir>/<volume name>
+# Rules: absolute path, no trailing /, no quotes, the directory must already
+# exist (a single-volume one is used as it is — not the root of a disk, which
+# brings lost+found along). Set them BEFORE the first `make up`: existing
+# volumes are not moved, and `make up` refuses to start while one is elsewhere
+# (README, section 7). docker-compose.volumes.yml shows what is bound where.
+# `make destroy` empties these directories.
+# KALTURA_DB_DIR=/data/kaltura/db
+# KALTURA_WEB_DIR=/data/kaltura/web
+# KALTURA_LOG_DIR=
+# KALTURA_TMP_DIR=
+# KALTURA_SEARCH_DIR=
+# KALTURA_LIVE_DIR=
+# KALTURA_ANALYTICS_DIR=
+# KALTURA_DATA_DIR=
 
 # ── Host without internet ─────────────────────────────────────
 # Images are built elsewhere (`make export-images` on an x86_64 host with

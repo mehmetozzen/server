@@ -263,13 +263,17 @@ fi
 avail=$(df -Pk /var/lib/docker 2>/dev/null | awk 'NR==2{print int($4/1048576)}')
 [ -z "$avail" ] && avail=$(df -Pk / | awk 'NR==2{print int($4/1048576)}')
 [ "${avail:-99}" -lt 5 ] && bad "only ${avail}GB free on the Docker filesystem" || ok "${avail}GB free for images and volumes"
-# With KALTURA_DATA_DIR the volumes are not on the Docker filesystem at all.
-if [ -n "${KALTURA_DATA_DIR:-}" ]; then
-    davail=$(df -Pk "$KALTURA_DATA_DIR" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')
-    if [ -z "$davail" ]; then bad "KALTURA_DATA_DIR=$KALTURA_DATA_DIR is not readable"
-    elif [ "$davail" -lt 5 ]; then bad "only ${davail}GB free in KALTURA_DATA_DIR ($KALTURA_DATA_DIR)"
-    else ok "${davail}GB free for volumes in $KALTURA_DATA_DIR"; fi
-fi
+# Volumes with a KALTURA_*_DIR are not on the Docker filesystem at all: one
+# line per filesystem they are on.
+while read -r _fs _vols; do
+    [ -n "$_fs" ] || continue
+    davail=$(df -Pk "$_fs" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')
+    if [ -z "$davail" ]; then bad "$_fs (volumes: $_vols) is not readable"
+    elif [ "$davail" -lt 5 ]; then bad "only ${davail}GB free on $_fs (volumes: $_vols)"
+    else ok "${davail}GB free on $_fs (volumes: $_vols)"; fi
+done < <(KALTURA_CONF="$CONF" "$HERE/data-dir.sh" list | while read -r _v _d _; do
+             echo "$(df -P "$_d" 2>/dev/null | awk 'NR==2{print $6}') $_v"
+         done | awk 'NF == 2 {v[$1] = v[$1] (v[$1] ? "," : "") $2} END {for (f in v) print f, v[f]}')
 
 # ── 8. Port exposure ──────────────────────────────────────────────────────────
 # Only the web ports and RTMP ingest belong on 0.0.0.0. Everything else — MySQL,
