@@ -24,11 +24,17 @@ MEDIA_FLAG   := $(if $(shell grep -qE '^KALTURA_MEDIA_DIR=.+' $(CONF) 2>/dev/nul
 # KALTURA_STORAGE_DIR is set.
 STORAGE_DIR  := $(shell sed -n 's/^KALTURA_STORAGE_DIR=//p' $(CONF) 2>/dev/null | tail -1)
 STORAGE_FLAG := $(if $(STORAGE_DIR),-f $(MAKEFILE_DIR)/docker-compose.storage.yml)
+# Named volumes kept in a host directory (see docker-compose.data.yml). Added
+# only when KALTURA_DATA_DIR is set: without it they stay in Docker's own
+# storage. scripts/data-dir.sh creates the subdirectories and refuses volumes
+# that already exist elsewhere (DATA_SH prepare, before every `up`).
+DATA_FLAG    := $(if $(shell grep -qE '^KALTURA_DATA_DIR=.+' $(CONF) 2>/dev/null && echo set),-f $(MAKEFILE_DIR)/docker-compose.data.yml)
+DATA_SH      := KALTURA_CONF=$(CONF) $(MAKEFILE_DIR)/scripts/data-dir.sh
 # Host with no internet (see docker-compose.offline.yml): images come from
 # `make import-images`, so nothing may be pulled or built.
 OFFLINE      := $(shell grep -qE '^KALTURA_OFFLINE=1' $(CONF) 2>/dev/null && echo 1)
 OFFLINE_FLAG := $(if $(OFFLINE),-f $(MAKEFILE_DIR)/docker-compose.offline.yml)
-COMPOSE      := docker compose --env-file $(CONF) $(PROFILE_FLAG) -f $(MAKEFILE_DIR)/docker-compose.yml $(MEDIA_FLAG) $(STORAGE_FLAG) $(OFFLINE_FLAG)
+COMPOSE      := docker compose --env-file $(CONF) $(PROFILE_FLAG) -f $(MAKEFILE_DIR)/docker-compose.yml $(MEDIA_FLAG) $(STORAGE_FLAG) $(DATA_FLAG) $(OFFLINE_FLAG)
 
 # Core = everything except the Druid analytics stack (for low-RAM hosts).
 # analytics-receiver is CORE, not Druid: live-rtmp's on_publish auth callback
@@ -40,8 +46,8 @@ DRUID_SERVICES := druid-postgres druid-zookeeper druid-coordinator druid-broker 
                   druid-historical druid-middlemanager druid-router
 
 .DEFAULT_GOAL := help
-.PHONY: help config build up core-up realtime-up start stop restart down destroy reset \
-        druid-up druid-down logs ps shell mysql verify doctor reindex backup restore \
+.PHONY: help config check-config data-dirs build up core-up realtime-up start stop restart down \
+        destroy reset druid-up druid-down logs ps shell mysql verify doctor reindex backup restore \
         export-images import-images
 
 help: ## Show this help
@@ -71,6 +77,10 @@ check-config:
 	  /|/opt|/opt/|/opt/kaltura|/opt/kaltura/*) echo "KALTURA_STORAGE_DIR=$(STORAGE_DIR) would cover the product tree — use the storage's own directory (e.g. /kvd)"; exit 1 ;; \
 	esac
 
+# Before anything creates a volume (see DATA_FLAG).
+data-dirs: check-config
+	@$(DATA_SH) prepare
+
 build: check-config ## Build all locally-built images (cached layers make this fast)
 	@test -z "$(OFFLINE)" || { echo "KALTURA_OFFLINE=1: images come from 'make import-images', there is nothing to build from"; exit 1; }
 	$(COMPOSE) build
@@ -84,10 +94,10 @@ import-images: check-config ## Verify and load that tar on the offline host:  ma
 	@KALTURA_CONF=$(CONF) $(MAKEFILE_DIR)/scripts/import-images.sh "$(IMAGES)"
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
-up: check-config ## Start the stack (analytics included unless COMPOSE_PROFILES is commented out in kaltura.conf)
+up: data-dirs ## Start the stack (analytics included unless COMPOSE_PROFILES is commented out in kaltura.conf)
 	$(COMPOSE) up -d
 
-core-up: check-config ## Start without analytics regardless of kaltura.conf (low-RAM hosts; live and VOD still work)
+core-up: data-dirs ## Start without analytics regardless of kaltura.conf (low-RAM hosts; live and VOD still work)
 	$(COMPOSE) up -d $(CORE_SERVICES)
 
 # Kept as an alias: analytics (Druid + Kafka) is on by default now, so this is
@@ -108,20 +118,23 @@ down: ## Stop and remove containers (KEEPS volumes / data)
 
 destroy: ## Stop and remove containers AND volumes (DELETES ALL DATA)
 	$(COMPOSE) down -v
+	@$(DATA_SH) wipe
 
 reset: check-config ## Clean reinstall: wipe volumes + generated config, rebuild, start
 	$(COMPOSE) down -v
+	@$(DATA_SH) wipe
 	rm -f $(ROOT)/.kaltura_installed $(ROOT)/configurations/.docker_secrets.env
 	@for f in $(ROOT)/configurations/*.template.ini $(ROOT)/configurations/*.ini.template; do \
 		[ -e "$$f" ] || continue; \
 		rm -f "$${f%.template.ini}.ini" "$${f%.ini.template}.ini"; \
 	done
 	$(if $(OFFLINE),,$(COMPOSE) build)
+	@$(DATA_SH) prepare
 	$(COMPOSE) up -d
 	@echo "Stack starting. Follow init with:  make -C docker logs S=kaltura"
 
 # ── Analytics (Druid) only ──────────────────────────────────────────────────────
-druid-up: ## Start only the Druid analytics stack
+druid-up: data-dirs ## Start only the Druid analytics stack
 	$(COMPOSE) up -d $(DRUID_SERVICES)
 
 druid-down: ## Stop only the Druid analytics stack (reclaims ~4 GB)

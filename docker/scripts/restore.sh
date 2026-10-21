@@ -85,6 +85,9 @@ COMPOSE=(docker compose --env-file "$CONF" -f "$DOCKER_DIR/docker-compose.yml")
 [ -n "${KALTURA_MEDIA_DIR:-}" ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.media.yml")
 # STORAGE_FLAG likewise: without it new uploads to a Local-storage publisher fail.
 [ -n "${KALTURA_STORAGE_DIR:-}" ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.storage.yml")
+# DATA_FLAG likewise: without it the volumes would be recreated in Docker's own
+# storage and the restore would land there instead of in KALTURA_DATA_DIR.
+[ -n "${KALTURA_DATA_DIR:-}" ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.data.yml")
 # And OFFLINE_FLAG: on a host with no internet the digest-pinned images only
 # resolve through the offline overlay.
 [ "${KALTURA_OFFLINE:-}" = 1 ] && COMPOSE+=(-f "$DOCKER_DIR/docker-compose.offline.yml")
@@ -92,11 +95,20 @@ COMPOSE=(docker compose --env-file "$CONF" -f "$DOCKER_DIR/docker-compose.yml")
 echo "2. Stopping the stack"
 "${COMPOSE[@]}" down >/dev/null 2>&1 || true
 say "containers" "stopped"
+KALTURA_CONF="$CONF" "$HERE/data-dir.sh" prepare || die "volume directories not ready (see above)"
+
+# What `docker run -v` mounts for a volume. With KALTURA_DATA_DIR its host
+# directory: `docker volume rm` leaves that directory's contents in place, and
+# `docker run -v <name>:…` would recreate the volume in Docker's own storage,
+# without the bind.
+vol() {
+    if [ -n "${KALTURA_DATA_DIR:-}" ]; then echo "$KALTURA_DATA_DIR/$1"; else echo "${PROJECT}_$1"; fi
+}
 
 echo "3. Restoring the content volume"
 if [ -f "$SRC/web-content.tgz" ]; then
     docker volume rm "${PROJECT}_kaltura_web" >/dev/null 2>&1 || true
-    docker run --rm -v "${PROJECT}_kaltura_web:/data" -v "$SRC:/backup:ro" alpine \
+    docker run --rm -v "$(vol kaltura_web):/data" -v "$SRC:/backup:ro" alpine \
         sh -c 'rm -rf /data/* /data/..?* 2>/dev/null; tar xzf /backup/web-content.tgz -C /data' \
         || die "could not restore the content volume"
     say "web content" "restored"
@@ -106,6 +118,10 @@ fi
 
 echo "4. Starting MySQL on an empty data volume"
 docker volume rm "${PROJECT}_mysql_data" >/dev/null 2>&1 || true
+if [ -n "${KALTURA_DATA_DIR:-}" ]; then
+    docker run --rm -v "$KALTURA_DATA_DIR:/d" -w /d alpine sh -c 'rm -rf mysql_data && mkdir mysql_data' \
+        || die "could not empty $KALTURA_DATA_DIR/mysql_data"
+fi
 "${COMPOSE[@]}" up -d mysql >/dev/null 2>&1 || die "could not start MySQL"
 # Wait for the compose healthcheck, not a bare ping: on a fresh data volume the
 # mysql image runs a TEMPORARY server to initialise, answers ping from it, then
@@ -164,7 +180,7 @@ say "grants" "applied and verified"
 
 if [ -f "$SRC/druid-shared.tgz" ]; then
     echo "7. Restoring Druid segments"
-    docker run --rm -v "${PROJECT}_druid_shared:/data" -v "$SRC:/backup:ro" alpine \
+    docker run --rm -v "$(vol druid_shared):/data" -v "$SRC:/backup:ro" alpine \
         sh -c 'rm -rf /data/* 2>/dev/null; tar xzf /backup/druid-shared.tgz -C /data' \
         && say "druid segments" "restored"
 fi

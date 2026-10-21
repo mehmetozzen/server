@@ -1,0 +1,50 @@
+# Named volumes kept in a host directory instead of Docker's own storage.
+#
+# By default every volume below lives under Docker's data-root
+# (/var/lib/docker/volumes). KALTURA_DATA_DIR in kaltura.conf puts them in that
+# host directory instead — e.g. a separate disk for the database — one
+# subdirectory per volume, named after it: <KALTURA_DATA_DIR>/mysql_data,
+# <KALTURA_DATA_DIR>/kaltura_web, … The volumes keep their names
+# (docker_mysql_data, …), so everything that addresses them by name works
+# unchanged; only where the bytes live changes. Docker still fills an empty
+# one from the image and gives it the image directory's owner, as before.
+#
+# `make` adds this file only when the variable is set (DATA_FLAG in the
+# Makefile), and first runs scripts/data-dir.sh prepare: a local bind volume
+# whose directory is missing fails at container start instead of being
+# created, and a volume that already exists is reused as it is — compose never
+# moves data — so one created elsewhere must stop the stack, not be silently
+# kept. Running compose by hand? Pass this file on every call, as with
+# docker-compose.media.yml.
+#
+# Must list every volume in docker-compose.yml; data-dir.sh refuses to start
+# when one is missing here.
+volumes:
+  kafka_data:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/kafka_data"}
+  live_recordings:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/live_recordings"}
+  mysql_data:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/mysql_data"}
+  kaltura_web:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/kaltura_web"}
+  kaltura_log:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/kaltura_log"}
+  kaltura_tmp:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/kaltura_tmp"}
+  sphinx_data:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/sphinx_data"}
+  druid_shared:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/druid_shared"}
+  druid_pgdata:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/druid_pgdata"}
+  druid_coordinator_var:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/druid_coordinator_var"}
+  druid_broker_var:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/druid_broker_var"}
+  druid_historical_var:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/druid_historical_var"}
+  druid_middle_var:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/druid_middle_var"}
+  druid_router_var:
+    driver_opts: {type: none, o: bind, device: "${KALTURA_DATA_DIR:?not set in docker/kaltura.conf}/druid_router_var"}

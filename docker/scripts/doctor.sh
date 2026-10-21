@@ -263,6 +263,13 @@ fi
 avail=$(df -Pk /var/lib/docker 2>/dev/null | awk 'NR==2{print int($4/1048576)}')
 [ -z "$avail" ] && avail=$(df -Pk / | awk 'NR==2{print int($4/1048576)}')
 [ "${avail:-99}" -lt 5 ] && bad "only ${avail}GB free on the Docker filesystem" || ok "${avail}GB free for images and volumes"
+# With KALTURA_DATA_DIR the volumes are not on the Docker filesystem at all.
+if [ -n "${KALTURA_DATA_DIR:-}" ]; then
+    davail=$(df -Pk "$KALTURA_DATA_DIR" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')
+    if [ -z "$davail" ]; then bad "KALTURA_DATA_DIR=$KALTURA_DATA_DIR is not readable"
+    elif [ "$davail" -lt 5 ]; then bad "only ${davail}GB free in KALTURA_DATA_DIR ($KALTURA_DATA_DIR)"
+    else ok "${davail}GB free for volumes in $KALTURA_DATA_DIR"; fi
+fi
 
 # ── 8. Port exposure ──────────────────────────────────────────────────────────
 # Only the web ports and RTMP ingest belong on 0.0.0.0. Everything else — MySQL,
