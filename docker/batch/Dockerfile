@@ -5,7 +5,7 @@
 # defaults across every conversion profile).
 FROM mwader/static-ffmpeg:7.1@sha256:a8090df5f5608daef387e1b2e93b98aaacb4d92153ad904e7d715c725724fca4 AS ffmpeg-source
 
-FROM php:8.1-cli@sha256:76e563191d1ade120313a8736df24154d21da5155c0756f147c0b01bd19d9087
+FROM php:8.2.35-cli-trixie@sha256:f7c6b9fc4b410e6fa01160cf72b1c19bce7d5e35fd065c9290fceb15097a480b
 
 # System libs required for PHP extensions
 RUN apt-get update && apt-get install -y \
@@ -82,11 +82,15 @@ RUN docker-php-ext-install \
     intl \
     pcntl
 
-# PHP extensions that require configure (gd + ldap)
+# PHP extensions that require configure (gd + ldap + ftp)
+# ftp: php:8.2+ images no longer compile it in. ftpMgr (FTP drop folders,
+# remote storage export, distribution) calls ftp_connect/ftp_ssl_connect;
+# --with-openssl-dir keeps FTPS working as it did on 8.1.
 RUN LDAP_LIBDIR=$(find /usr/lib -name "libldap.so" | head -1 | xargs dirname | sed 's|/usr/||') \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-configure ldap --with-libdir="$LDAP_LIBDIR" \
-    && docker-php-ext-install gd ldap
+    && docker-php-ext-configure ftp --with-openssl-dir=/usr \
+    && docker-php-ext-install gd ldap ftp
 
 # Pinned — see the note in docker/app/Dockerfile.
 RUN pecl install apcu-5.1.28 && docker-php-ext-enable apcu
@@ -95,7 +99,7 @@ RUN pecl install memcache-8.2 && docker-php-ext-enable memcache
 # Kaltura expects ffmpeg-aux as a separate binary
 RUN ln -sf /usr/bin/ffmpeg /usr/bin/ffmpeg-aux
 
-# Kaltura batch spawns workers via /usr/bin/php; php:8.1-cli installs at /usr/local/bin/php
+# Kaltura batch spawns workers via /usr/bin/php; php:8.2-cli installs at /usr/local/bin/php
 RUN ln -s /usr/local/bin/php /usr/bin/php
 
 # Kaltura batch templates hardcode /opt/kaltura/bin/mediainfo

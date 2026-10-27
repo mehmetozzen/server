@@ -20,7 +20,7 @@ optional Apache Druid analytics backend.
 
 | Service | Container | Image / Build | Ports | What it does |
 |---|---|---|---|---|
-| `kaltura` | `kaltura_app` | build `docker/app` (PHP 8.1 + Apache) | 80, 443 | The platform. Serves the `/api_v3` API, KMC NG, Admin Console, Studio, player embeds. On first boot `entrypoint.sh` initialises the DB, generates client SDKs, loads the DWH schema, and renders every `*.ini` from templates. |
+| `kaltura` | `kaltura_app` | build `docker/app` (PHP 8.2 + Apache) | 80, 443 | The platform. Serves the `/api_v3` API, KMC NG, Admin Console, Studio, player embeds. On first boot `entrypoint.sh` initialises the DB, generates client SDKs, loads the DWH schema, and renders every `*.ini` from templates. |
 | `batch` | `kaltura_batch` | build `docker/batch` (PHP CLI) | — | The batch worker pool (`KGenericBatchMgr`). Runs conversion, import, bulk-upload, thumbnail, and scheduling jobs. Talks back to the API over HTTPS. |
 | `scheduler` | `kaltura_scheduler` | build `docker/batch` (cron entrypoint) | — | The host-cron jobs of a bare-metal install: log rotation (logrotate, adapted with `copytruncate` for daemon-held logs), API cache cleanup (`clear_cache.sh`), and deleted/old content cleanup (`deleteOldContent.php`). Without it logs grow unbounded. |
 | `live-rtmp` | `kaltura_live_rtmp` | build `docker/live-rtmp` (nginx + rtmp module) | 1935 (RTMP ingest) | Live media server — Kaltura's official FOSS live path. Encoders push `rtmp://<host>:1935/kLive/<stream>`; HLS comes out at `/hlsme/<stream>.m3u8` (Apache-proxied), consumed by a KMC "Manual Live Stream" entry. |
@@ -429,7 +429,8 @@ Documented so they read as decisions, not surprises:
 - **Document (PDF/PPT) conversion is off** — it needs LibreOffice (~500 MB) in
   the batch image. See the `KAsyncConvertPdfLinux` note in
   `docker/batch/batch.ini.template` to enable it.
-- **PHP 8.1 / MySQL 5.7 / Node 20 bases are past their support windows.**
+- **MySQL 5.7 / Node 20 bases are past their support windows; PHP 8.2 ends
+  security support on 2026-12-31.**
   Functional, but plan upgrades before internet-facing production use.
 
 ---

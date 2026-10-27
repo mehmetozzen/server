@@ -1,6 +1,6 @@
 # Pinned by digest as well as tag: tags move. Update deliberately with
 #   docker buildx imagetools inspect <image>:<tag> | awk '/^Digest:/{print $2}'
-FROM php:8.1-apache@sha256:72f0c0134922985022d55a39b0390d35dc7a10e961aa6c44fa35b4c3102f4268
+FROM php:8.2.35-apache-trixie@sha256:1dcd13aa67697127a140a7d303ab955c923098c39d525ecd728f2e8afb4d1546
 
 RUN apt-get update && apt-get install -y \
     libpng-dev \
@@ -108,10 +108,15 @@ RUN mkdir -p /opt/kaltura/apps/kmc-analytics && \
 # an XSLT over the entry MRSS (ConfigurableDistributionProfile), so without
 # it XSLTProcessor is undefined and submitting an entry dies with a fatal
 # error -- the distribution row sticks at SUBMITTING and no job is queued.
+# ftp: php:8.2+ images no longer compile it in. ftpMgr (FTP drop folders,
+# remote storage export, distribution) calls ftp_connect/ftp_ssl_connect;
+# --with-openssl-dir keeps FTPS working as it did on 8.1.
 RUN LDAP_LIBDIR=$(find /usr/lib -name "libldap.so" | head -1 | xargs dirname | sed 's|/usr/||') \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-configure ldap --with-libdir="$LDAP_LIBDIR" \
+    && docker-php-ext-configure ftp --with-openssl-dir=/usr \
     && docker-php-ext-install \
+        ftp \
         pdo_mysql \
         mysqli \
         mbstring \
