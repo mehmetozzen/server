@@ -817,6 +817,10 @@ id						    = 670
 friendlyName					    = Copy Caption Assets
 type						    = KAsyncCopyCaptions
 scriptPath					    = ../plugins/content/caption/base/batch/CopyCaptions/KAsyncCopyCaptionsExe.php
+; Upstream leaves this unset: getTempFilePath() then writes to /copy_captions_*,
+; fopen fails and fwrite(false) is a fatal on PHP 8, so clip & trim never
+; copies captions to the new entry.
+params.localTempPath                                = @TMP_DIR@/copycaptions
 
 ; This block was missing its section header, so its id/scriptPath silently
 ; OVERRODE KAsyncCopyCaptions above (the copy-captions worker ran the UsersCsv
